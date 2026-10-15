@@ -1,0 +1,38 @@
+{
+  "name": "obsidian-encrypted-git-sync",
+  "version": "0.1.0",
+  "description": "End-to-end encrypted vault sync through any Git host, on desktop and mobile.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "obsidian",
+    "sync",
+    "git",
+    "encryption"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@isomorphic-git/lightning-fs": "^4.10.3",
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.44.2",
+    "node-diff3": "^3.1.2",
+    "pako": "^2.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pako": "^2.0.4",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "fake-indexeddb": "^6.2.5",
+    "obsidian": "^1.14.4",
+    "typescript": "~5.9.0",
+    "vitest": "^5.0.4"
+  }
+}

@@ -1,0 +1,200 @@
+# Encrypted Git Sync for Obsidian
+
+End-to-end encrypted vault sync through any Git host (GitHub, GitLab, Gitea, a bare
+repository on your server), on desktop **and** mobile. The Git host only ever stores
+ciphertext: note contents, file names and folder structure are all encrypted.
+
+Your vault stays plain Markdown on every device, so search, graph view and other
+plugins keep working as usual.
+
+## How it works
+
+```
+Vault (plaintext) ──scan & hash──► Sync engine ──encrypt──► shadow repo ──push──► Git host
+        ▲                         (3-way plan)              (bare, objects only)       │
+        └──────── write ◄──decrypt◄── merge ◄────────── fetch ◄────────────────────────┘
+```
+
+* **Shadow repository.** A bare Git repository stored in IndexedDB (via
+  `lightning-fs`), separate from the vault. The plugin writes Git objects directly,
+  so ciphertext is never duplicated as files. Git is used for transport and history.
+* **Encrypted manifest.** `manifest.enc` maps real paths to content hashes. It is
+  compressed and encrypted, so the host does not learn file names or structure.
+* **Blob names.** Each file is stored at `blobs/xx/<HMAC(path)>`: stable across
+  syncs and devices, but not reversible.
+* **Three-way sync.** For every file, the plugin compares what this device last
+  synced (*base*), the vault (*local*) and the manifest (*remote*):
+  * changed on one side: take that side;
+  * changed on both: line-based three-way merge in plaintext; if the same lines
+    were changed differently, both versions are kept as
+    `Note (conflict 2026-10-15 0741 phone).md`;
+  * edited on one side, deleted on the other: the edit wins;
+  * deleted files leave a tombstone (kept 90 days), so a device restored from an
+    old backup does not resurrect them.
+* **Only changed files are re-encrypted.** Unchanged notes keep their blob, so a
+  sync without edits pushes nothing.
+
+### Repository layout (what the Git host sees)
+
+```
+README.md        plaintext note that this repo is encrypted
+meta.json        format version, KDF parameters, salt, key check (no secrets)
+manifest.enc     encrypted, compressed file list
+blobs/3f/9a1c…   one encrypted blob per file
+```
+
+## Cryptography
+
+| Purpose          | Algorithm                                                           |
+|------------------|---------------------------------------------------------------------|
+| Key derivation   | PBKDF2-HMAC-SHA256, 600,000 iterations, random 128-bit salt          |
+| Key separation   | HKDF-SHA256 into an encryption key and a naming key                  |
+| Content          | AES-256-GCM, random 96-bit nonce per blob                            |
+| Blob binding     | Blob path is authenticated data, so blobs cannot be swapped          |
+| Names            | HMAC-SHA256 of the vault path (Unicode-normalised)                   |
+| Integrity        | SHA-256 of the plaintext is checked against the manifest on download |
+
+Blob format: `[version: 1 byte][nonce: 12 bytes][ciphertext + 16-byte tag]`.
+All crypto uses the Web Crypto API, available in Obsidian on every platform.
+
+**What is still visible to the host:** the number of files, their approximate
+sizes, and when syncs happen. Content, names and folders are not.
+
+## Setup
+
+1. Create an **empty private** repository on your Git host. (A repository with
+   other branches works too; the plugin uses its own branch.)
+2. Create a personal access token with read/write access to that repository
+   (GitHub: fine-grained token, "Contents: read and write").
+3. In Obsidian: Settings → Encrypted Git Sync
+   * Repository URL: `https://github.com/you/vault-sync.git`
+   * Username: your username (GitHub accepts any non-empty value with a token,
+     GitLab accepts `oauth2`)
+   * Access token: paste it
+   * Device name: e.g. `laptop`, `phone`
+   * Click **Test**.
+4. Run **Sync now** (ribbon icon or command palette). On the first sync you choose
+   the encryption passphrase. **Use at least 12 characters and store it in a
+   password manager. If you lose it, the synced data cannot be recovered.**
+5. On every other device, install the plugin, enter the same repository and token,
+   and sync. You will be asked for the passphrase.
+
+The access token and (optionally) the passphrase are stored in Obsidian's secret
+storage on each device (or the vault's local storage on older Obsidian versions),
+never in `data.json`, which lives inside the vault folder.
+
+## History and repository size
+
+Encrypted files do not delta-compress, so every saved version of a file costs its
+full size. Two features keep the repository small:
+
+* **Debounced syncing** (`Sync after editing`) avoids storing every autosave.
+* **Automatic squashing** thins out history with a retention policy (default):
+  * the 5 newest versions of today
+  * the last version of each of the last 7 days
+  * the last version of each of the last 4 weeks
+  * the last version of each of the last 12 months
+
+  That is at most about 29 snapshots, however old the vault is. Squashing
+  rewrites the branch and force-pushes, with a check that no other device pushed
+  in the meantime. Other devices continue seamlessly. Some hosts (including
+  GitHub) free the space of dropped versions only after their own garbage
+  collection runs.
+
+For local version history of individual notes, Obsidian's core File Recovery
+plugin works alongside this plugin.
+
+## What is synced
+
+* Notes (`.md`) and canvases (`.canvas`) by default.
+* Attachments when **Sync attachments** is on, up to the size limit (default 20 MB;
+  most hosts reject files over 100 MB).
+* Never: the `.obsidian` folder, dot-folders, and anything matching the ignore
+  patterns (default: `.trash/**`, `.DS_Store`, `Thumbs.db`).
+
+## Safety nets
+
+* A wrong passphrase is detected before anything is touched.
+* If a sync would delete more than half of the tracked files (and more than 10),
+  the plugin asks first.
+* If the remote repository was wiped or re-created, the device treats itself as
+  new instead of deleting local files.
+* Deleted files go to Obsidian's trash (respecting your trash setting).
+* **Recovery without Obsidian:**
+
+  ```sh
+  git clone --branch encrypted-main https://github.com/you/vault-sync.git encrypted
+  node dist/recover.mjs encrypted ./recovered-vault
+  ```
+
+  The passphrase is read from `EGS_PASSPHRASE` or asked for. Keep a copy of
+  `dist/recover.mjs` somewhere safe.
+
+## Commands
+
+* **Sync now**
+* **Squash history now**
+* **Forget passphrase on this device**
+* **Reset this device's sync state**: forgets the local sync history and repository
+  cache. Notes are not touched; the next sync compares everything afresh.
+
+## Limitations
+
+* HTTPS with a token only. `isomorphic-git` does not support SSH.
+* Large vaults with many attachments are slow on mobile, especially the first sync.
+* Renames are synced as delete plus add.
+* Changing the passphrase is not implemented yet (it requires re-encrypting
+  everything; the planned approach is a random data key wrapped by the
+  passphrase key).
+* Files are not padded, so approximate sizes are visible to the host.
+
+## Development
+
+```sh
+npm install
+npm test            # unit tests + end-to-end tests against a real Git HTTP server
+npm run build       # typecheck, then main.js and dist/recover.mjs
+npm run dev         # watch mode
+```
+
+To try it, copy `main.js`, `manifest.json` and `styles.css` into
+`<vault>/.obsidian/plugins/encrypted-git-sync/` and enable the plugin. **Use a test
+vault first.**
+
+The end-to-end tests run several simulated devices against `git http-backend`,
+covering merges, conflicts, deletions, push races, wrong passphrases, a wiped
+remote, squashing and the recovery tool. One test runs the exact mobile stack
+(`lightning-fs` on IndexedDB plus the `requestUrl` HTTP adapter).
+
+### Source layout
+
+```
+src/
+  main.ts              plugin entry: commands, scheduling, status, key handling
+  settings.ts          settings and settings tab
+  polyfills.ts         Buffer for isomorphic-git on mobile
+  core/                platform-neutral, fully tested
+    crypto.ts          key derivation, AES-GCM, blob names, hashing
+    manifest.ts        encrypted manifest and tombstones
+    planner.ts         three-way sync planner (pure)
+    merge.ts           diff3 text merge, conflict-copy names
+    retention.ts       squash retention policy (pure)
+    filters.ts         ignore globs, attachment and size rules
+    state.ts           per-device sync state
+    syncEngine.ts      fetch, plan, apply, push
+  git/
+    shadowRepo.ts      bare repo via isomorphic-git (objects, trees, push)
+    squash.ts          history rewrite with lease check
+    headFix.ts         workaround for remotes whose HEAD branch does not exist
+  obsidian/
+    http.ts            isomorphic-git HTTP client on requestUrl (no CORS issues)
+    vault.ts           vault access through Obsidian's API
+    stateStore.ts      sync state file in the plugin folder
+    secrets.ts         token and passphrase storage
+    modals.ts          passphrase and confirmation dialogs
+  cli/recover.ts       standalone recovery tool
+```
+
+## License
+
+MIT

@@ -1,0 +1,9 @@
+.egs-error {
+  color: var(--text-error);
+}
+
+.egs-textarea {
+  width: 100%;
+  min-width: 240px;
+  font-family: var(--font-monospace);
+}
