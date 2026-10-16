@@ -11,6 +11,7 @@ import {
   encryptBytes,
   parseRepoMeta,
   repoIdOf,
+  isSameRepository,
   sha256Hex,
   type RepoMeta,
   type VaultKeys,
@@ -33,7 +34,7 @@ export const META_PATH = "meta.json";
 export const MANIFEST_PATH = "manifest.enc";
 export const README_PATH = "README.md";
 
-const REPO_README = `# Encrypted vault
+export const REPO_README = `# Encrypted vault
 
 This repository is managed by the Encrypted Git Sync plugin for Obsidian.
 All notes, file names and folder names are encrypted (AES-256-GCM).
@@ -201,6 +202,20 @@ export class SyncEngine {
     return out;
   }
 
+  /**
+   * One sync attempt. Steps, in order:
+   *   1. Load this device's state (the "base") and the remote (fetch, unlock, manifest).
+   *   2. Detect a wiped/re-created remote and drop the base if so.
+   *   3. Hash the vault (cached by mtime+size) and plan per file (planner.ts).
+   *   4. Ask before mass deletions.
+   *   5. Apply actions: vault writes happen immediately, remote changes are
+   *      collected into a new tree.
+   *   6. If the remote changed: encrypt the manifest, commit, push.
+   *      A rejected push throws PushRejectedError and sync() retries from 1.
+   *   7. Save the new base state (only after a successful push).
+   * Vault writes in step 5 are safe to repeat on retry: the next attempt sees
+   * them as local state that already matches the remote.
+   */
   private async syncOnce(): Promise<Omit<SyncResult, "attempts">> {
     const state = (await this.stateStore.load()) ?? emptyState();
     const remote = await this.loadRemote();
@@ -212,7 +227,8 @@ export class SyncEngine {
     const knownRepo = state.repoId ?? state.repoSalt ?? null;
     const remoteReset =
       (remote.isNew && state.lastCommit !== null) ||
-      (knownRepo !== null && knownRepo !== repoIdOf(remote.meta));
+      // A key rotation changes the id but lists the old one: not a reset.
+      (knownRepo !== null && !isSameRepository(remote.meta, knownRepo));
     if (remoteReset) {
       this.progress("Remote repository was re-created; treating this device as new.");
       state.files = {};
@@ -279,6 +295,9 @@ export class SyncEngine {
       delete state.hashCache[path];
     };
 
+    // The merge base is this device's last synced blob. It may be missing
+    // (squashed away) or encrypted with a pre-rotation key; then there is no
+    // base and a conflicting edit falls back to a conflict copy.
     const readBase = async (path: string): Promise<Uint8Array | null> => {
       const blob = state.files[path]?.blob;
       if (!blob || !(await this.repo.hasObject(blob))) return null;

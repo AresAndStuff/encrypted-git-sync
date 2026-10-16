@@ -1,3 +1,4 @@
+/** History retention policy used by squashing; all times in UTC. */
 import { describe, expect, it } from "vitest";
 import { selectCommitsToKeep, type CommitInfo } from "../src/core/retention";
 

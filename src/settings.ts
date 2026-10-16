@@ -1,3 +1,13 @@
+/**
+ * Settings model (persisted in data.json) and the settings tab.
+ *
+ * data.json lives inside the vault, so it must never hold secrets: the access
+ * token and passphrase go through obsidian/secrets.ts instead. When adding a
+ * setting, add it to PluginSettings and DEFAULT_SETTINGS; loadSettings() in
+ * main.ts merges stored values over the defaults, so old data.json files keep
+ * working.
+ */
+
 import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import { DEFAULT_IGNORE_PATTERNS } from "./core/filters";
 import { DEFAULT_RETENTION, type CalendarZone, type RetentionPolicy } from "./core/retention";
@@ -169,6 +179,22 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
           new Notice("Passphrase forgotten on this device.");
           this.display();
         }),
+      );
+
+    new Setting(containerEl)
+      .setName("Rotate encryption key")
+      .setDesc(
+        "Re-encrypts everything with a new key and removes the old history from the remote. " +
+          "Use this if your passphrase may have leaked.",
+      )
+      .addButton((b) =>
+        b
+          .setButtonText("Rotate key")
+          .setWarning()
+          .onClick(async () => {
+            await this.plugin.rotateKey();
+            this.display();
+          }),
       );
 
     // --- Schedule -------------------------------------------------------

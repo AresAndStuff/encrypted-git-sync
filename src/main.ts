@@ -1,3 +1,17 @@
+/**
+ * Plugin entry point: wires the platform-neutral core (src/core, src/git) to
+ * Obsidian. Owns the session key, the busy flag, timers and all user-facing
+ * notices.
+ *
+ * Conventions:
+ *   - Every operation that touches the remote sets `busy` first, so syncs,
+ *     squashes, passphrase changes and key rotations never overlap.
+ *   - `keys` is the unlocked master key for this session, cached by repoId.
+ *     A passphrase change keeps the repoId (no re-prompt); a key rotation
+ *     changes it (other devices are re-prompted).
+ *   - Background syncs are "quiet": offline errors only show in the status bar.
+ */
+
 import "./polyfills";
 
 import { Notice, Plugin, type TAbstractFile } from "obsidian";
@@ -12,6 +26,7 @@ import { SyncAbortedError, SyncEngine, type KeyProvider, type SyncResult } from 
 import { ShadowRepo } from "./git/shadowRepo";
 import { squashHistory } from "./git/squash";
 import { changeRepoPassphrase } from "./git/changePassphrase";
+import { rotateRepoKey, RotationRacedError } from "./git/rotateKey";
 import { obsidianHttp } from "./obsidian/http";
 import { askChangePassphrase, askPassphrase, confirm } from "./obsidian/modals";
 import { Secrets } from "./obsidian/secrets";
@@ -48,6 +63,11 @@ export default class EncryptedGitSyncPlugin extends Plugin {
       id: "change-passphrase",
       name: "Change encryption passphrase",
       callback: () => void this.changePassphrase(),
+    });
+    this.addCommand({
+      id: "rotate-encryption-key",
+      name: "Rotate encryption key (re-encrypt everything)",
+      callback: () => void this.rotateKey(),
     });
     this.addCommand({
       id: "forget-passphrase",
@@ -408,6 +428,55 @@ export default class EncryptedGitSyncPlugin extends Plugin {
       if (e instanceof WrongPassphraseError) {
         this.setStatus("Encrypted sync: idle");
         new Notice("Encrypted sync: the current passphrase is wrong. Nothing was changed.", 10_000);
+      } else {
+        this.reportError(e, false);
+      }
+    } finally {
+      notice.hide();
+      this.busy = false;
+    }
+  }
+
+  /**
+   * Full key rotation (see git/rotateKey.ts). Syncs first so this device's
+   * edits are in the remote and its base state is current, then re-encrypts.
+   */
+  async rotateKey(): Promise<void> {
+    if (!this.isConfigured() || !this.secrets.get("token")) {
+      new Notice("Encrypted sync: set the repository URL and access token first.");
+      return;
+    }
+    if (this.busy) {
+      new Notice("Encrypted sync is busy; try again in a moment.");
+      return;
+    }
+    const input = await askChangePassphrase(this.app, "rotate");
+    if (!input) return;
+
+    this.busy = true;
+    const notice = new Notice("Rotating encryption key…", 0);
+    try {
+      const repo = this.createRepo();
+      await this.createEngine(repo).sync();
+      const result = await rotateRepoKey(repo, input.oldPassphrase, input.newPassphrase, {
+        stateStore: this.stateStore,
+        onProgress: (msg) => this.setStatus(`Encrypted sync: ${msg}`),
+      });
+      this.keys = result.keys;
+      this.secrets.set("passphrase", input.remember ? input.newPassphrase : null);
+      this.setStatus("Encrypted sync: key rotated");
+      new Notice(
+        `Encrypted sync: key rotated, ${result.files} file(s) re-encrypted. ` +
+          "Other devices will ask for the new passphrase on their next sync.",
+        15_000,
+      );
+    } catch (e) {
+      if (e instanceof WrongPassphraseError) {
+        this.setStatus("Encrypted sync: idle");
+        new Notice("Encrypted sync: the current passphrase is wrong. Nothing was changed.", 10_000);
+      } else if (e instanceof RotationRacedError) {
+        this.setStatus("Encrypted sync: idle");
+        new Notice(`Encrypted sync: ${e.message}`, 10_000);
       } else {
         this.reportError(e, false);
       }

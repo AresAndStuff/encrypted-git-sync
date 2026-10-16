@@ -1,3 +1,4 @@
+/** Ignore globs, attachment and size rules. */
 import { describe, expect, it } from "vitest";
 import { createPathFilter, DEFAULT_IGNORE_PATTERNS, globToRegExp } from "../src/core/filters";
 

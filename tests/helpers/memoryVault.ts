@@ -1,3 +1,4 @@
+/** In-memory VaultIO for tests. Each write bumps a fake mtime. */
 import type { VaultFile, VaultIO } from "../../src/core/syncEngine";
 import { utf8Decode, utf8Encode } from "../../src/core/encoding";
 

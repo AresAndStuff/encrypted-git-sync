@@ -1,3 +1,4 @@
+/** Three-way sync planner: one case per rule in src/core/planner.ts. */
 import { describe, expect, it } from "vitest";
 import { planSync, type SyncAction } from "../src/core/planner";
 import type { ManifestEntry } from "../src/core/manifest";

@@ -1,3 +1,4 @@
+/** Crypto primitives, meta.json formats 1 and 2, passphrase change and rotation metadata. */
 import { describe, expect, it } from "vitest";
 import {
   blobPathFor,
@@ -8,6 +9,8 @@ import {
   parseRepoMeta,
   repoIdOf,
   rewrapRepoMeta,
+  createRotatedMeta,
+  isSameRepository,
   sha256Hex,
   unlockRepo,
   WrongPassphraseError,
@@ -130,6 +133,20 @@ describe("passphrase change", () => {
     expect(v2.keyCheck).toBeUndefined();
     // Blobs written under format 1 decrypt with the upgraded repository.
     await roundTripAcross(v1Keys, await unlockRepo(v2, NEW));
+  });
+
+  it("rotation creates a new key that remembers the old ids, also across later changes", async () => {
+    const { meta: first, keys: firstKeys } = await createRepoMeta(OLD, ITER);
+    const { meta: rotated, keys } = await createRotatedMeta(first, NEW, ITER);
+    expect(rotated.repoId).not.toBe(first.repoId);
+    expect(isSameRepository(rotated, first.repoId!)).toBe(true);
+    expect(isSameRepository(rotated, "unrelated")).toBe(false);
+    // A new master key: old blobs no longer decrypt.
+    const ct = await encryptBytes(firstKeys, utf8Encode("x"), "aad");
+    await expect(decryptBytes(keys, ct, "aad")).rejects.toBeInstanceOf(DecryptionError);
+    // A later passphrase change keeps the rotation history.
+    const changed = (await rewrapRepoMeta(rotated, NEW, "third passphrase", ITER)).meta;
+    expect(changed.previousRepoIds).toEqual([first.repoId]);
   });
 
   it("binds the wrapped key to the repository id", async () => {

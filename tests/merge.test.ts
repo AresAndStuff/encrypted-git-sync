@@ -1,3 +1,4 @@
+/** Line-based three-way merge and conflict-copy naming. */
 import { describe, expect, it } from "vitest";
 import { conflictCopyPath, isTextPath, mergeText } from "../src/core/merge";
 

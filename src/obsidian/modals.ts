@@ -1,3 +1,9 @@
+/**
+ * Dialogs: unlock / create passphrase, change passphrase or rotate key, and a
+ * generic confirmation. Each modal resolves a promise exactly once, with null
+ * (or false) when the user closes it without confirming.
+ */
+
 import { Modal, Setting, type App } from "obsidian";
 import { MIN_PASSPHRASE_LENGTH } from "../core/crypto";
 
@@ -110,7 +116,11 @@ export interface ChangePassphraseInput {
   remember: boolean;
 }
 
-/** Asks for the current passphrase and a new one (twice). */
+/**
+ * Asks for the current passphrase and a new one (twice). Used for both a
+ * passphrase change ("change") and a full key rotation ("rotate"); only the
+ * texts differ.
+ */
 export class ChangePassphraseModal extends Modal {
   private oldPassphrase = "";
   private newPassphrase = "";
@@ -121,11 +131,33 @@ export class ChangePassphraseModal extends Modal {
   constructor(
     app: App,
     private readonly resolve: (result: ChangePassphraseInput | null) => void,
+    private readonly mode: "change" | "rotate" = "change",
   ) {
     super(app);
   }
 
   onOpen(): void {
+    const { contentEl } = this;
+    if (this.mode === "rotate") {
+      this.setTitle("Rotate encryption key");
+      contentEl.createEl("p", {
+        text:
+          "Creates a new encryption key, re-encrypts every synced file with it and replaces the remote " +
+          "history with a single version. Use this if your passphrase may have leaked.",
+      });
+      contentEl.createEl("p", {
+        text:
+          "Older versions are removed from the remote. Other devices keep working after entering the new " +
+          "passphrase. For a hard guarantee, also move to a new remote repository (see the README).",
+        cls: "setting-item-description",
+      });
+    } else {
+      this.renderChangeIntro();
+    }
+    this.renderFields();
+  }
+
+  private renderChangeIntro(): void {
     const { contentEl } = this;
     this.setTitle("Change encryption passphrase");
     contentEl.createEl("p", {
@@ -136,9 +168,13 @@ export class ChangePassphraseModal extends Modal {
     contentEl.createEl("p", {
       text:
         "Older versions in the history can still be opened with the old passphrase. " +
-        "If the old passphrase was leaked, read the README section on rotating the key instead.",
+        "If the old passphrase was leaked, use \"Rotate encryption key\" instead.",
       cls: "setting-item-description",
     });
+  }
+
+  private renderFields(): void {
+    const { contentEl } = this;
 
     const password = (name: string, set: (v: string) => void) =>
       new Setting(contentEl).setName(name).addText((t) => {
@@ -158,7 +194,7 @@ export class ChangePassphraseModal extends Modal {
       .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((b) =>
         b
-          .setButtonText("Change passphrase")
+          .setButtonText(this.mode === "rotate" ? "Rotate key" : "Change passphrase")
           .setCta()
           .onClick(() => this.submit()),
       );
@@ -186,8 +222,8 @@ export class ChangePassphraseModal extends Modal {
   }
 }
 
-export function askChangePassphrase(app: App): Promise<ChangePassphraseInput | null> {
-  return new Promise((resolve) => new ChangePassphraseModal(app, resolve).open());
+export function askChangePassphrase(app: App, mode: "change" | "rotate" = "change"): Promise<ChangePassphraseInput | null> {
+  return new Promise((resolve) => new ChangePassphraseModal(app, resolve, mode).open());
 }
 
 export class ConfirmModal extends Modal {

@@ -56,6 +56,13 @@ export interface RepoMeta {
   keyCheck?: string;
   createdAt: string;
   passphraseChangedAt?: string;
+  /**
+   * Ids of master keys this repository used before a key rotation, newest
+   * first. Lets devices that synced before the rotation keep their sync state
+   * instead of treating the repository as re-created.
+   */
+  previousRepoIds?: string[];
+  rotatedAt?: string;
 }
 
 export interface VaultKeys {
@@ -236,6 +243,35 @@ export async function createRepoMeta(
   return { meta, keys: await keysFromMaster(master, repoId) };
 }
 
+/** How many previous key ids a rotated meta.json remembers. */
+const MAX_PREVIOUS_REPO_IDS = 10;
+
+/**
+ * Key rotation: a brand-new random master key (and repoId) for an existing
+ * repository. Unlike rewrapRepoMeta, everything must then be re-encrypted
+ * with the returned keys; see git/rotateKey.ts.
+ */
+export async function createRotatedMeta(
+  previous: RepoMeta,
+  newPassphrase: string,
+  iterations = DEFAULT_PBKDF2_ITERATIONS,
+  now = new Date(),
+): Promise<{ meta: RepoMeta; keys: VaultKeys }> {
+  if (newPassphrase.length < MIN_PASSPHRASE_LENGTH) {
+    throw new Error(`The new passphrase must have at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+  }
+  const { meta, keys } = await createRepoMeta(newPassphrase, iterations);
+  meta.createdAt = previous.createdAt;
+  meta.rotatedAt = now.toISOString();
+  meta.previousRepoIds = [repoIdOf(previous), ...(previous.previousRepoIds ?? [])].slice(0, MAX_PREVIOUS_REPO_IDS);
+  return { meta, keys };
+}
+
+/** True if `id` is this repository's current or a previous master key id. */
+export function isSameRepository(meta: RepoMeta, id: string): boolean {
+  return repoIdOf(meta) === id || (meta.previousRepoIds ?? []).includes(id);
+}
+
 /** Recovers the master key with the passphrase (any supported format). */
 async function masterKeyFor(meta: RepoMeta, passphrase: string): Promise<Uint8Array> {
   if (meta.format > REPO_FORMAT_VERSION) {
@@ -281,6 +317,9 @@ export async function rewrapRepoMeta(
   const repoId = repoIdOf(meta);
   const next = await wrappedMeta(master, repoId, newPassphrase, iterations, meta.createdAt);
   next.passphraseChangedAt = now.toISOString();
+  // Keep rotation history so devices from before a rotation are still recognised.
+  if (meta.previousRepoIds) next.previousRepoIds = meta.previousRepoIds;
+  if (meta.rotatedAt) next.rotatedAt = meta.rotatedAt;
   return { meta: next, keys: await keysFromMaster(master, repoId) };
 }
 

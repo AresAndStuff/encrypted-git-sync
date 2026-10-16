@@ -160,22 +160,40 @@ for the new one.
 
 **If the old passphrase leaked, this is not enough.** Older commits still contain
 the previous `meta.json`, and the old passphrase opens it, which reveals the
-master key that still protects new notes. In that case, start a fresh repository:
-create a new empty repository, point every device at it, run
-**Reset this device's sync state** on each, sync from the device with the most
-complete vault first (it will ask for a new passphrase), then delete the old
-repository. A built-in "rotate key" command is planned.
+master key. Use **Rotate encryption key** instead (below).
 
 **Upgrading from 0.1.0:** update the plugin on **all** devices before changing
 the passphrase. Repositories created with 0.1.0 use repository format 1, which
 keeps working; changing the passphrase converts it to format 2, which 0.1.0
 cannot read.
 
+## Rotating the encryption key
+
+Run **Rotate encryption key** (command palette, or *Rotate key* in settings) if
+your passphrase or a device may be compromised. It:
+
+* syncs first, then creates a new random master key protected by a new passphrase;
+* re-encrypts every synced file (blob names change too);
+* replaces the remote history with a single commit and force-pushes it, after
+  checking that no other device pushed in the meantime.
+
+Other devices ask for the new passphrase on their next sync and then continue
+with their sync state intact; nothing is re-downloaded. Older versions in the
+history are gone, so you lose the squash snapshots.
+
+The Git host may keep the old, unreachable objects for some time (GitHub can
+still serve a commit by its id). For a hard guarantee, move to a new repository
+instead: create a new empty private repository, enter its URL on every device,
+sync from the device with the most complete vault first (it asks for a new
+passphrase), then sync the others, and delete the old repository. Do not
+`git clone --mirror` the old one: a mirror can include old commits.
+
 ## Commands
 
 * **Sync now**
 * **Squash history now**
 * **Change encryption passphrase**
+* **Rotate encryption key (re-encrypt everything)**
 * **Forget passphrase on this device**
 * **Reset this device's sync state**: forgets the local sync history and repository
   cache. Notes are not touched; the next sync compares everything afresh.
@@ -198,6 +216,9 @@ Pushing the tag runs `.github/workflows/release.yml`, which lints, builds, tests
 and publishes a GitHub release with `main.js`, `manifest.json` and `styles.css`.
 
 ## Development
+
+See [MAINTAINING.md](MAINTAINING.md) for the architecture, invariants and how
+to change the repository format safely.
 
 ```sh
 npm install
@@ -236,6 +257,7 @@ src/
     shadowRepo.ts      bare repo via isomorphic-git (objects, trees, push)
     squash.ts          history rewrite with lease check
     changePassphrase.ts  re-wraps the master key and pushes the new meta.json
+    rotateKey.ts       new master key, re-encrypt everything, single-commit history
     headFix.ts         workaround for remotes whose HEAD branch does not exist
   obsidian/
     http.ts            isomorphic-git HTTP client on requestUrl (no CORS issues)

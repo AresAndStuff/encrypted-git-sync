@@ -1,3 +1,4 @@
+/** Ref advertisement rewrite for remotes whose HEAD branch does not exist. */
 import { describe, expect, it } from "vitest";
 import { injectHead } from "../src/git/headFix";
 import { utf8Decode, utf8Encode } from "../src/core/encoding";

@@ -19,6 +19,7 @@ import { startGitServer, type TestGitServer } from "./helpers/gitServer";
 import { MemoryVault } from "./helpers/memoryVault";
 import { createFormat1Meta } from "./helpers/legacy";
 import { changeRepoPassphrase } from "../src/git/changePassphrase";
+import { rotateRepoKey, RotationRacedError } from "../src/git/rotateKey";
 import { parseRepoMeta } from "../src/core/crypto";
 
 const ITER = 1_000;
@@ -329,6 +330,97 @@ describe("passphrase change", () => {
     await changeRepoPassphrase(changer.repo, OLD, NEW, { iterations: ITER });
 
     a.passphrase = NEW;
+    await a.sync();
+    expect(a.vault.paths()).toEqual(["x.md", "y.md"]);
+  });
+});
+
+describe("key rotation", () => {
+  const OLD = "old passphrase 1";
+  const NEW = "new passphrase 22";
+  const git = (name: string, ...args: string[]) =>
+    execFileSync("git", ["-C", join(server.root, name), ...args]).toString().trim();
+
+  for (const format1 of [false, true]) {
+    it(`re-encrypts everything, drops history, and other devices continue${format1 ? " (format 1 repo)" : ""}`, async () => {
+      const name = newRemote();
+      const url = server.url(name);
+      const a = new Device(url, "a", OLD, undefined, { format1 });
+      const b = new Device(url, "b", OLD, undefined, { format1 });
+      a.vault.set("Notes/one.md", "one\n");
+      a.vault.set("Notes/two.md", "two\n");
+      a.vault.set("gone.md", "deleted later\n");
+      await a.sync();
+      a.vault.remove("gone.md");
+      await a.sync();
+      await b.sync();
+      const oldBlobs = git(name, "ls-tree", "-r", "--name-only", "main").split("\n").filter((p) => p.startsWith("blobs/"));
+      const oldMeta = parseRepoMeta(git(name, "show", "main:meta.json"));
+
+      const result = await rotateRepoKey(a.repo, OLD, NEW, { iterations: ITER, stateStore: a.state });
+      expect(result.files).toBe(2);
+
+      // One commit, every blob path new, old passphrase useless.
+      expect(git(name, "rev-list", "--count", "main")).toBe("1");
+      const newBlobs = git(name, "ls-tree", "-r", "--name-only", "main").split("\n").filter((p) => p.startsWith("blobs/"));
+      expect(newBlobs).toHaveLength(2);
+      expect(newBlobs.some((p) => oldBlobs.includes(p))).toBe(false);
+      const meta = parseRepoMeta(git(name, "show", "main:meta.json"));
+      expect(meta.format).toBe(2);
+      expect(meta.previousRepoIds?.[0]).toBe(oldMeta.repoId ?? oldMeta.kdf.salt);
+      await expect(unlockRepo(meta, OLD)).rejects.toBeInstanceOf(WrongPassphraseError);
+
+      // The rotating device continues without any work.
+      a.passphrase = NEW;
+      const again = await a.sync();
+      expect(again.pushed).toBe(false);
+      expect(again.summary.download + again.summary.upload).toBe(0);
+
+      // Another device: refused with the old passphrase, then resumes with its
+      // state intact (no downloads, no conflicts); its pending edit goes out,
+      // and the tombstone still prevents "gone.md" from coming back.
+      b.vault.set("Notes/two.md", "two, edited on b\n");
+      await expect(b.sync()).rejects.toBeInstanceOf(WrongPassphraseError);
+      b.passphrase = NEW;
+      const resumed = await b.sync();
+      expect(resumed.conflicts).toEqual([]);
+      expect(resumed.summary.download).toBe(0);
+      expect(resumed.summary.upload).toBe(1);
+      await a.sync();
+      expect(a.vault.get("Notes/two.md")).toBe("two, edited on b\n");
+
+      const fresh = new Device(url, "fresh", NEW);
+      fresh.vault.set("gone.md", "deleted later\n");
+      await fresh.sync();
+      expect(fresh.vault.paths()).toEqual(["Notes/one.md", "Notes/two.md"]);
+    });
+  }
+
+  it("aborts without changes if another device pushed meanwhile", async () => {
+    const name = newRemote();
+    const url = server.url(name);
+    const a = new Device(url, "a", OLD);
+    a.vault.set("x.md", "x");
+    await a.sync();
+    const other = new Device(url, "other", OLD);
+    await other.sync();
+
+    class RacingRepo extends ShadowRepo {
+      raced = false;
+      async peekRemoteHead() {
+        if (!this.raced) {
+          this.raced = true;
+          other.vault.set("y.md", "y");
+          await other.sync();
+        }
+        return super.peekRemoteHead();
+      }
+    }
+    const rotator = new Device(url, "rotator", OLD, undefined, {}, RacingRepo);
+    const before = git(name, "rev-parse", "main");
+    await expect(rotateRepoKey(rotator.repo, OLD, NEW, { iterations: ITER })).rejects.toBeInstanceOf(RotationRacedError);
+    // Only the other device's commit landed; the old key still works.
+    expect(git(name, "rev-parse", "main~1")).toBe(before);
     await a.sync();
     expect(a.vault.paths()).toEqual(["x.md", "y.md"]);
   });

@@ -1,3 +1,4 @@
+/** Fixtures that reproduce data written by older plugin versions. */
 import {
   encryptBytes,
   keysFromMaster,
