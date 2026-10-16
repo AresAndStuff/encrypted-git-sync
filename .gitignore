@@ -4,3 +4,6 @@ dist/
 *.log
 .DS_Store
 coverage/
+data.json
+sync-state.json
+sync-state.json.tmp
