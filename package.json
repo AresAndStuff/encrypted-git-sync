@@ -8,8 +8,10 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [
     "obsidian",
@@ -26,13 +28,19 @@
     "pako": "^2.2.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.0.0",
     "@types/pako": "^2.0.4",
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "fake-indexeddb": "^6.2.5",
+    "jiti": "^2.7.0",
     "obsidian": "^1.14.4",
     "typescript": "~5.9.0",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^5.0.4"
-  }
+  },
+  "author": "trash4170"
 }

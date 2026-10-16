@@ -115,7 +115,7 @@ export default class EncryptedGitSyncPlugin extends Plugin {
 
   private gitFs(): PromiseFsClient {
     if (!this.lfs) this.lfs = new LightningFS(`encrypted-git-sync-${this.settings.vaultId}`);
-    return { promises: this.lfs.promises } as unknown as PromiseFsClient;
+    return { promises: this.lfs.promises };
   }
 
   private createRepo(): ShadowRepo {

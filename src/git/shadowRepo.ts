@@ -36,6 +36,15 @@ export class PushRejectedError extends Error {
   }
 }
 
+/** The two fs calls used directly; isomorphic-git types them loosely. */
+interface DirFs {
+  stat(path: string): Promise<unknown>;
+  mkdir(path: string): Promise<void>;
+}
+function dirFs(fs: PromiseFsClient): DirFs {
+  return fs.promises as unknown as DirFs;
+}
+
 const AUTHOR = { name: "Encrypted Git Sync", email: "sync@encrypted-git-sync.invalid" };
 const REMOTE = "origin";
 
@@ -59,7 +68,7 @@ export class ShadowRepo {
   async ensureInitialized(): Promise<void> {
     let initialized = true;
     try {
-      await this.fs.promises.stat(`${this.gitdir}/HEAD`);
+      await dirFs(this.fs).stat(`${this.gitdir}/HEAD`);
     } catch {
       initialized = false;
     }
@@ -130,7 +139,7 @@ export class ShadowRepo {
 
   async hasObject(oid: string): Promise<boolean> {
     try {
-      await git.readObject({ ...this.base, oid, format: "deflated" });
+      await git.readBlob({ ...this.base, oid });
       return true;
     } catch {
       return false;
@@ -270,7 +279,7 @@ async function mkdirp(fs: PromiseFsClient, dir: string): Promise<void> {
   for (const part of parts) {
     current = `${current}/${part}`;
     try {
-      await fs.promises.mkdir(current);
+      await dirFs(fs).mkdir(current);
     } catch (e) {
       const code = (e as { code?: string }).code;
       if (code !== "EEXIST") throw e;

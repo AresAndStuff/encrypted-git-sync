@@ -99,7 +99,7 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
       .setDesc("Your Git host username. For GitHub any non-empty value works with a token; GitLab accepts \"oauth2\".")
       .addText((t) =>
         t
-          .setPlaceholder("oauth2")
+          .setPlaceholder("Username")
           .setValue(s.username)
           .onChange(async (v) => {
             s.username = v.trim();
@@ -177,7 +177,7 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Automatic sync interval (minutes)")
-      .setDesc("0 turns it off.")
+      .setDesc("Set to 0 to turn it off.")
       .addText((t) =>
         numberInput(t.inputEl, s.autoSyncMinutes, 0, async (v) => {
           s.autoSyncMinutes = v;
@@ -188,7 +188,7 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync after editing (seconds)")
-      .setDesc("Syncs this many seconds after you stop editing. 0 turns it off. Debouncing keeps the history small.")
+      .setDesc("Syncs this many seconds after you stop editing. Set to 0 to turn it off. Debouncing keeps the history small.")
       .addText((t) =>
         numberInput(t.inputEl, s.syncAfterEditSeconds, 0, async (v) => {
           s.syncAfterEditSeconds = v;
@@ -210,8 +210,8 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Maximum file size (MB)")
-      .setDesc("Larger files are skipped. 0 = no limit (not recommended; most Git hosts reject files over 100 MB).")
+      .setName("Maximum file size in megabytes")
+      .setDesc("Larger files are skipped. Set to 0 for no limit (not recommended; most Git hosts reject files over 100 megabytes).")
       .addText((t) =>
         numberInput(t.inputEl, s.maxFileSizeMB, 0, async (v) => {
           s.maxFileSizeMB = v;
@@ -221,7 +221,7 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Ignore patterns")
-      .setDesc("One glob per line, relative to the vault root. Example: Private/** or *.pdf. The .obsidian folder is never synced.")
+      .setDesc(`One glob per line, relative to the vault root. Example: Private/** or *.pdf. The ${this.app.vault.configDir} folder is never synced.`)
       .addTextArea((t) => {
         t.inputEl.rows = 6;
         t.inputEl.addClass("egs-textarea");
@@ -303,9 +303,9 @@ function numberInput(input: HTMLInputElement, value: number, min: number, onChan
   input.type = "number";
   input.min = String(min);
   input.value = String(value);
-  input.addEventListener("change", async () => {
+  input.addEventListener("change", () => {
     const v = Math.max(min, Math.floor(Number(input.value)));
-    if (Number.isFinite(v)) await onChange(v);
     input.value = String(v);
+    if (Number.isFinite(v)) void onChange(v);
   });
 }

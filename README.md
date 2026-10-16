@@ -7,6 +7,22 @@ ciphertext: note contents, file names and folder structure are all encrypted.
 Your vault stays plain Markdown on every device, so search, graph view and other
 plugins keep working as usual.
 
+> **Beta.** This plugin syncs your notes and can delete or overwrite files as part
+> of syncing. Keep a separate backup of your vault while trying it.
+
+## Network use
+
+This plugin connects **only to the Git repository URL you enter in its settings**,
+over HTTPS, to download and upload the encrypted repository. Everything it sends
+is encrypted on your device first, apart from the repository's `README.md` and
+`meta.json` (which contain no note data). It needs an access token for that
+repository, which you create with your Git host (for example GitHub or GitLab);
+that may require an account with that host.
+
+There is no telemetry, no analytics and no other server. The plugin does not read
+or write files outside your vault; its local Git data is kept in Obsidian's own
+browser storage (IndexedDB).
+
 ## How it works
 
 ```
@@ -148,10 +164,21 @@ plugin works alongside this plugin.
   passphrase key).
 * Files are not padded, so approximate sizes are visible to the host.
 
+## Releasing
+
+```sh
+npm version patch      # bumps package.json, manifest.json, versions.json; commits and tags
+git push --follow-tags
+```
+
+Pushing the tag runs `.github/workflows/release.yml`, which lints, builds, tests
+and publishes a GitHub release with `main.js`, `manifest.json` and `styles.css`.
+
 ## Development
 
 ```sh
 npm install
+npm run lint        # Obsidian's official plugin lint rules (eslint-plugin-obsidianmd)
 npm test            # unit tests + end-to-end tests against a real Git HTTP server
 npm run build       # typecheck, then main.js and dist/recover.mjs
 npm run dev         # watch mode
@@ -195,6 +222,16 @@ src/
   cli/recover.ts       standalone recovery tool
 ```
 
+## Third-party libraries
+
+Bundled into `main.js`:
+
+* [isomorphic-git](https://github.com/isomorphic-git/isomorphic-git) (MIT)
+* [@isomorphic-git/lightning-fs](https://github.com/isomorphic-git/lightning-fs) (MIT)
+* [node-diff3](https://github.com/bhousel/node-diff3) (MIT)
+* [pako](https://github.com/nodeca/pako) (MIT and Zlib)
+* [buffer](https://github.com/feross/buffer) (MIT)
+
 ## License
 
-MIT
+[MIT](LICENSE)

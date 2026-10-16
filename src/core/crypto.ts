@@ -60,19 +60,19 @@ export class DecryptionError extends Error {
 }
 
 function subtle(): SubtleCrypto {
-  const c = globalThis.crypto;
+  const c = typeof crypto === "undefined" ? undefined : crypto;
   if (!c?.subtle) throw new Error("Web Crypto API is not available in this environment.");
   return c.subtle;
 }
 
 export function randomBytes(length: number): Uint8Array {
   const out = new Uint8Array(length);
-  globalThis.crypto.getRandomValues(out);
+  crypto.getRandomValues(out);
   return out;
 }
 
 export async function deriveKeys(passphrase: string, kdf: KdfParams): Promise<VaultKeys> {
-  if (kdf.name !== "PBKDF2-SHA256") throw new Error(`Unsupported KDF: ${kdf.name}`);
+  if (kdf.name !== "PBKDF2-SHA256") throw new Error(`Unsupported KDF: ${String(kdf.name)}`);
   if (!passphrase) throw new Error("Passphrase must not be empty.");
 
   const s = subtle();

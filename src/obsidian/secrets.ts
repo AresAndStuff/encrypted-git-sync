@@ -33,7 +33,7 @@ export class Secrets {
       const v = store.getSecret(this.id(name));
       if (v) return v;
     }
-    const v = this.app.loadLocalStorage(this.id(name));
+    const v: unknown = this.app.loadLocalStorage(this.id(name));
     return typeof v === "string" && v ? v : null;
   }
 
