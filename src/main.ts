@@ -4,15 +4,16 @@ import { Notice, Plugin, type TAbstractFile } from "obsidian";
 import LightningFS from "@isomorphic-git/lightning-fs";
 import type { AuthCallback, PromiseFsClient } from "isomorphic-git";
 
-import { createRepoMeta, unlockRepo, WrongPassphraseError, type RepoMeta, type VaultKeys } from "./core/crypto";
+import { createRepoMeta, repoIdOf, unlockRepo, WrongPassphraseError, type RepoMeta, type VaultKeys } from "./core/crypto";
 import { toHex } from "./core/encoding";
 import { createPathFilter } from "./core/filters";
 import { emptyState } from "./core/state";
 import { SyncAbortedError, SyncEngine, type KeyProvider, type SyncResult } from "./core/syncEngine";
 import { ShadowRepo } from "./git/shadowRepo";
 import { squashHistory } from "./git/squash";
+import { changeRepoPassphrase } from "./git/changePassphrase";
 import { obsidianHttp } from "./obsidian/http";
-import { askPassphrase, confirm } from "./obsidian/modals";
+import { askChangePassphrase, askPassphrase, confirm } from "./obsidian/modals";
 import { Secrets } from "./obsidian/secrets";
 import { PluginFileStateStore } from "./obsidian/stateStore";
 import { ObsidianVault } from "./obsidian/vault";
@@ -43,6 +44,11 @@ export default class EncryptedGitSyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.runSync() });
     this.addCommand({ id: "squash-history", name: "Squash history now", callback: () => void this.runSquash(true) });
+    this.addCommand({
+      id: "change-passphrase",
+      name: "Change encryption passphrase",
+      callback: () => void this.changePassphrase(),
+    });
     this.addCommand({
       id: "forget-passphrase",
       name: "Forget passphrase on this device",
@@ -135,7 +141,8 @@ export default class EncryptedGitSyncPlugin extends Plugin {
   private keyProvider(): KeyProvider {
     return {
       unlock: async (meta: RepoMeta) => {
-        if (this.keys && this.keys.salt === meta.kdf.salt) return this.keys;
+        // Same master key (a passphrase change keeps it): no need to ask again.
+        if (this.keys && this.keys.repoId === repoIdOf(meta)) return this.keys;
         this.keys = null;
 
         const remembered = this.secrets.get("passphrase");
@@ -370,6 +377,45 @@ export default class EncryptedGitSyncPlugin extends Plugin {
   }
 
   // --- Maintenance ------------------------------------------------------
+
+  async changePassphrase(): Promise<void> {
+    if (!this.isConfigured() || !this.secrets.get("token")) {
+      new Notice("Encrypted sync: set the repository URL and access token first.");
+      return;
+    }
+    if (this.busy) {
+      new Notice("Encrypted sync is busy; try again in a moment.");
+      return;
+    }
+    const input = await askChangePassphrase(this.app);
+    if (!input) return;
+
+    this.busy = true;
+    const notice = new Notice("Changing passphrase…", 0);
+    try {
+      const result = await changeRepoPassphrase(this.createRepo(), input.oldPassphrase, input.newPassphrase, {
+        onProgress: (msg) => this.setStatus(`Encrypted sync: ${msg}`),
+      });
+      // The master key is unchanged, so this session stays unlocked.
+      this.keys = result.keys;
+      this.secrets.set("passphrase", input.remember ? input.newPassphrase : null);
+      this.setStatus("Encrypted sync: passphrase changed");
+      new Notice(
+        "Encrypted sync: passphrase changed. Other devices will ask for the new passphrase on their next sync.",
+        10_000,
+      );
+    } catch (e) {
+      if (e instanceof WrongPassphraseError) {
+        this.setStatus("Encrypted sync: idle");
+        new Notice("Encrypted sync: the current passphrase is wrong. Nothing was changed.", 10_000);
+      } else {
+        this.reportError(e, false);
+      }
+    } finally {
+      notice.hide();
+      this.busy = false;
+    }
+  }
 
   forgetPassphrase(): void {
     this.keys = null;

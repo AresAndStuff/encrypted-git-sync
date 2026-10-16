@@ -21,8 +21,13 @@ export interface SyncState {
   version: 1;
   /** Remote commit this device last synced with. */
   lastCommit: string | null;
-  /** KDF salt of the repository; a change means the repo was re-created. */
-  repoSalt: string | null;
+  /**
+   * Identity of the repository's master key (see repoIdOf). A different id
+   * means the repository was re-created; a passphrase change keeps it.
+   */
+  repoId: string | null;
+  /** @deprecated Pre-0.2 name of repoId; read once for compatibility. */
+  repoSalt?: string | null;
   files: Record<string, SyncedFile>;
   /** Avoids re-hashing unchanged files: keyed by path, valid while mtime+size match. */
   hashCache: Record<string, CachedHash>;
@@ -34,7 +39,7 @@ export function emptyState(): SyncState {
   return {
     version: 1,
     lastCommit: null,
-    repoSalt: null,
+    repoId: null,
     files: {},
     hashCache: {},
     lastSyncAt: 0,

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-encrypted-git-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "End-to-end encrypted vault sync through any Git host, on desktop and mobile.",
   "main": "main.js",
   "type": "module",

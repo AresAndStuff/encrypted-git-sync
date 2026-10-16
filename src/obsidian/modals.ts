@@ -1,4 +1,5 @@
 import { Modal, Setting, type App } from "obsidian";
+import { MIN_PASSPHRASE_LENGTH } from "../core/crypto";
 
 export interface PassphraseResult {
   passphrase: string;
@@ -35,7 +36,11 @@ export class PassphraseModal extends Modal {
           "Use the same passphrase on every device. If you lose it, your synced data cannot be recovered.",
       });
     } else {
-      contentEl.createEl("p", { text: "Enter the passphrase for the encrypted repository." });
+      contentEl.createEl("p", {
+        text:
+          "Enter the passphrase for the encrypted repository. " +
+          "If it was changed on another device, enter the new one.",
+      });
     }
     if (this.error) contentEl.createEl("p", { text: this.error, cls: "egs-error" });
 
@@ -79,7 +84,9 @@ export class PassphraseModal extends Modal {
 
     if (!this.passphrase) return void fail("Please enter a passphrase.");
     if (this.mode === "create") {
-      if (this.passphrase.length < 12) return void fail("Use at least 12 characters.");
+      if (this.passphrase.length < MIN_PASSPHRASE_LENGTH) {
+        return void fail(`Use at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+      }
       if (this.passphrase !== this.confirm) return void fail("The passphrases do not match.");
     }
     this.settled = true;
@@ -95,6 +102,92 @@ export class PassphraseModal extends Modal {
 
 export function askPassphrase(app: App, mode: "unlock" | "create", error?: string): Promise<PassphraseResult | null> {
   return new Promise((resolve) => new PassphraseModal(app, mode, resolve, error).open());
+}
+
+export interface ChangePassphraseInput {
+  oldPassphrase: string;
+  newPassphrase: string;
+  remember: boolean;
+}
+
+/** Asks for the current passphrase and a new one (twice). */
+export class ChangePassphraseModal extends Modal {
+  private oldPassphrase = "";
+  private newPassphrase = "";
+  private confirm = "";
+  private remember = false;
+  private settled = false;
+
+  constructor(
+    app: App,
+    private readonly resolve: (result: ChangePassphraseInput | null) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    this.setTitle("Change encryption passphrase");
+    contentEl.createEl("p", {
+      text:
+        "Your notes stay encrypted with the same key; only the passphrase that protects it changes. " +
+        "Other devices will ask for the new passphrase on their next sync.",
+    });
+    contentEl.createEl("p", {
+      text:
+        "Older versions in the history can still be opened with the old passphrase. " +
+        "If the old passphrase was leaked, read the README section on rotating the key instead.",
+      cls: "setting-item-description",
+    });
+
+    const password = (name: string, set: (v: string) => void) =>
+      new Setting(contentEl).setName(name).addText((t) => {
+        t.inputEl.type = "password";
+        t.inputEl.autocomplete = "off";
+        t.onChange(set);
+      });
+    password("Current passphrase", (v) => (this.oldPassphrase = v));
+    password("New passphrase", (v) => (this.newPassphrase = v));
+    password("Repeat new passphrase", (v) => (this.confirm = v));
+
+    new Setting(contentEl)
+      .setName("Remember on this device")
+      .addToggle((t) => t.setValue(false).onChange((v) => (this.remember = v)));
+
+    new Setting(contentEl)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((b) =>
+        b
+          .setButtonText("Change passphrase")
+          .setCta()
+          .onClick(() => this.submit()),
+      );
+  }
+
+  private submit(): void {
+    this.contentEl.querySelector(".egs-inline-error")?.remove();
+    const fail = (msg: string) => this.contentEl.createEl("p", { text: msg, cls: "egs-error egs-inline-error" });
+
+    if (!this.oldPassphrase) return void fail("Enter the current passphrase.");
+    if (this.newPassphrase.length < MIN_PASSPHRASE_LENGTH) {
+      return void fail(`Use at least ${MIN_PASSPHRASE_LENGTH} characters for the new passphrase.`);
+    }
+    if (this.newPassphrase !== this.confirm) return void fail("The new passphrases do not match.");
+    if (this.newPassphrase === this.oldPassphrase) return void fail("The new passphrase is the same as the current one.");
+
+    this.settled = true;
+    this.resolve({ oldPassphrase: this.oldPassphrase, newPassphrase: this.newPassphrase, remember: this.remember });
+    this.close();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.settled) this.resolve(null);
+  }
+}
+
+export function askChangePassphrase(app: App): Promise<ChangePassphraseInput | null> {
+  return new Promise((resolve) => new ChangePassphraseModal(app, resolve).open());
 }
 
 export class ConfirmModal extends Modal {

@@ -17,13 +17,17 @@ import { squashHistory } from "../src/git/squash";
 import { DEFAULT_RETENTION } from "../src/core/retention";
 import { startGitServer, type TestGitServer } from "./helpers/gitServer";
 import { MemoryVault } from "./helpers/memoryVault";
+import { createFormat1Meta } from "./helpers/legacy";
+import { changeRepoPassphrase } from "../src/git/changePassphrase";
+import { parseRepoMeta } from "../src/core/crypto";
 
 const ITER = 1_000;
 
-function keyProvider(passphrase: string): KeyProvider {
+function keyProvider(passphrase: string | (() => string), format1 = false): KeyProvider {
+  const pass = typeof passphrase === "function" ? passphrase : () => passphrase;
   return {
-    unlock: (meta: RepoMeta) => unlockRepo(meta, passphrase),
-    create: () => createRepoMeta(passphrase, ITER),
+    unlock: (meta: RepoMeta) => unlockRepo(meta, pass()),
+    create: () => (format1 ? createFormat1Meta(pass(), ITER) : createRepoMeta(pass(), ITER)),
   };
 }
 
@@ -46,18 +50,20 @@ class Device {
   repo: ShadowRepo;
   engine: SyncEngine;
   clock: { now: number };
+  passphrase: string;
 
   constructor(
     url: string,
     name: string,
     passphrase = "pw",
     clock = { now: Date.UTC(2026, 9, 15, 12) },
-    extra: Partial<SyncOptions> = {},
+    extra: Partial<SyncOptions> & { format1?: boolean } = {},
     RepoClass: typeof ShadowRepo = ShadowRepo,
   ) {
     this.clock = clock;
     this.repo = new RepoClass(nodeFs, join(work, `${name}-${++counter}.git`), { url, branch: "main", http });
-    this.engine = new SyncEngine(this.repo, this.vault, keyProvider(passphrase), this.state, {
+    this.passphrase = passphrase;
+    this.engine = new SyncEngine(this.repo, this.vault, keyProvider(() => this.passphrase, extra.format1 ?? false), this.state, {
       deviceName: name,
       now: () => this.clock.now,
       ...extra,
@@ -221,6 +227,113 @@ describe("two devices", () => {
   });
 });
 
+describe("passphrase change", () => {
+  const OLD = "old passphrase 1";
+  const NEW = "new passphrase 22";
+
+  async function remoteMeta(name: string) {
+    const json = execFileSync("git", ["-C", join(server.root, name), "show", "main:meta.json"]).toString();
+    return parseRepoMeta(json);
+  }
+
+  for (const format1 of [false, true]) {
+    it(`changes it on one device; others switch without re-syncing${format1 ? " (format 1 repo)" : ""}`, async () => {
+      const name = newRemote();
+      const url = server.url(name);
+      const a = new Device(url, "a", OLD, undefined, { format1 });
+      const b = new Device(url, "b", OLD, undefined, { format1 });
+      a.vault.set("Notes/one.md", "one\n");
+      a.vault.set("Notes/two.md", "two\n");
+      await a.sync();
+      await b.sync();
+      const before = await remoteMeta(name);
+      expect(before.format).toBe(format1 ? 1 : 2);
+
+      if (format1) {
+        // State files written by 0.1.0 named the repository id "repoSalt".
+        const legacy = (await b.state.load())! as unknown as Record<string, unknown>;
+        legacy.repoSalt = legacy.repoId;
+        delete legacy.repoId;
+        await b.state.save(legacy as never);
+      }
+
+      const result = await changeRepoPassphrase(a.repo, OLD, NEW, { iterations: ITER });
+      expect(result.upgraded).toBe(format1);
+
+      const after = await remoteMeta(name);
+      expect(after.format).toBe(2);
+      expect(after.repoId ?? after.kdf.salt).toBe(before.repoId ?? before.kdf.salt);
+      const changed = execFileSync("git", ["-C", join(server.root, name), "diff", "--name-only", "main~1", "main"])
+        .toString()
+        .trim();
+      expect(changed).toBe("meta.json");
+
+      // b still has the old passphrase: refused, and nothing is touched.
+      b.vault.set("Notes/one.md", "one, edited on b\n");
+      await expect(b.sync()).rejects.toBeInstanceOf(WrongPassphraseError);
+      expect(b.vault.get("Notes/one.md")).toBe("one, edited on b\n");
+
+      // With the new passphrase b continues exactly where it was: no reset,
+      // no conflict copies, only its own edit goes out.
+      b.passphrase = NEW;
+      const resumed = await b.sync();
+      expect(resumed.conflicts).toEqual([]);
+      expect(resumed.summary.upload).toBe(1);
+      expect(resumed.summary.download).toBe(0);
+
+      a.passphrase = NEW;
+      await a.sync();
+      expect(a.vault.get("Notes/one.md")).toBe("one, edited on b\n");
+
+      // A brand-new device needs the new passphrase.
+      const c = new Device(url, "c", OLD);
+      await expect(c.sync()).rejects.toBeInstanceOf(WrongPassphraseError);
+      c.passphrase = NEW;
+      await c.sync();
+      expect(c.vault.paths()).toEqual(["Notes/one.md", "Notes/two.md"]);
+    });
+  }
+
+  it("refuses a wrong current passphrase and leaves the remote unchanged", async () => {
+    const name = newRemote();
+    const a = new Device(server.url(name), "a", OLD);
+    a.vault.set("x.md", "x");
+    await a.sync();
+    const head = execFileSync("git", ["-C", join(server.root, name), "rev-parse", "main"]).toString();
+    await expect(changeRepoPassphrase(a.repo, "not the passphrase", NEW, { iterations: ITER })).rejects.toBeInstanceOf(
+      WrongPassphraseError,
+    );
+    expect(execFileSync("git", ["-C", join(server.root, name), "rev-parse", "main"]).toString()).toBe(head);
+  });
+
+  it("retries if another device pushes during the change", async () => {
+    const url = server.url(newRemote());
+    const a = new Device(url, "a", OLD);
+    a.vault.set("x.md", "x");
+    await a.sync();
+    const other = new Device(url, "other", OLD);
+    await other.sync();
+
+    let raced = false;
+    class RacingRepo extends ShadowRepo {
+      async push(oid: string, force = false) {
+        if (!raced) {
+          raced = true;
+          other.vault.set("y.md", "y");
+          await other.sync();
+        }
+        return super.push(oid, force);
+      }
+    }
+    const changer = new Device(url, "changer", OLD, undefined, {}, RacingRepo);
+    await changeRepoPassphrase(changer.repo, OLD, NEW, { iterations: ITER });
+
+    a.passphrase = NEW;
+    await a.sync();
+    expect(a.vault.paths()).toEqual(["x.md", "y.md"]);
+  });
+});
+
 describe("recovery tool", () => {
   it("decrypts a plain git clone without Obsidian", async () => {
     const name = newRemote();
@@ -245,6 +358,7 @@ describe("recovery tool", () => {
     const log = execFileSync("node", [cli, clone, out], {
       env: { ...process.env, EGS_PASSPHRASE: "recover me please" },
     }).toString();
+    expect(JSON.parse(nodeFs.readFileSync(join(clone, "meta.json"), "utf8")).format).toBe(2);
     expect(log).toMatch(/Restored 2 file/);
     expect(nodeFs.readFileSync(join(out, "Deep/Folder/Ü note.md"), "utf8")).toBe("unicode ✓\n");
 

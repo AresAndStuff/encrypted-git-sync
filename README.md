@@ -54,7 +54,7 @@ Vault (plaintext) ──scan & hash──► Sync engine ──encrypt──► 
 
 ```
 README.md        plaintext note that this repo is encrypted
-meta.json        format version, KDF parameters, salt, key check (no secrets)
+meta.json        format version, KDF parameters, salt, wrapped key (no secrets)
 manifest.enc     encrypted, compressed file list
 blobs/3f/9a1c…   one encrypted blob per file
 ```
@@ -63,8 +63,9 @@ blobs/3f/9a1c…   one encrypted blob per file
 
 | Purpose          | Algorithm                                                           |
 |------------------|---------------------------------------------------------------------|
-| Key derivation   | PBKDF2-HMAC-SHA256, 600,000 iterations, random 128-bit salt          |
-| Key separation   | HKDF-SHA256 into an encryption key and a naming key                  |
+| Master key       | Random 256-bit key, created once per repository                      |
+| Passphrase       | PBKDF2-HMAC-SHA256, 600,000 iterations, random 128-bit salt; the result encrypts (wraps) the master key with AES-256-GCM in `meta.json` |
+| Key separation   | HKDF-SHA256 from the master key into an encryption key and a naming key |
 | Content          | AES-256-GCM, random 96-bit nonce per blob                            |
 | Blob binding     | Blob path is authenticated data, so blobs cannot be swapped          |
 | Names            | HMAC-SHA256 of the vault path (Unicode-normalised)                   |
@@ -146,10 +147,35 @@ plugin works alongside this plugin.
   The passphrase is read from `EGS_PASSPHRASE` or asked for. Keep a copy of
   `dist/recover.mjs` somewhere safe.
 
+## Changing the passphrase
+
+Run **Change encryption passphrase** (command palette, or the *Change* button in
+settings). You enter the current passphrase and the new one twice.
+
+Your notes are not re-encrypted: they are protected by a random master key, and
+the passphrase only protects that key. Changing it rewrites `meta.json` and
+nothing else, so it takes a second and the history does not grow. Other devices
+keep their sync state; on their next sync they report a wrong passphrase and ask
+for the new one.
+
+**If the old passphrase leaked, this is not enough.** Older commits still contain
+the previous `meta.json`, and the old passphrase opens it, which reveals the
+master key that still protects new notes. In that case, start a fresh repository:
+create a new empty repository, point every device at it, run
+**Reset this device's sync state** on each, sync from the device with the most
+complete vault first (it will ask for a new passphrase), then delete the old
+repository. A built-in "rotate key" command is planned.
+
+**Upgrading from 0.1.0:** update the plugin on **all** devices before changing
+the passphrase. Repositories created with 0.1.0 use repository format 1, which
+keeps working; changing the passphrase converts it to format 2, which 0.1.0
+cannot read.
+
 ## Commands
 
 * **Sync now**
 * **Squash history now**
+* **Change encryption passphrase**
 * **Forget passphrase on this device**
 * **Reset this device's sync state**: forgets the local sync history and repository
   cache. Notes are not touched; the next sync compares everything afresh.
@@ -159,9 +185,6 @@ plugin works alongside this plugin.
 * HTTPS with a token only. `isomorphic-git` does not support SSH.
 * Large vaults with many attachments are slow on mobile, especially the first sync.
 * Renames are synced as delete plus add.
-* Changing the passphrase is not implemented yet (it requires re-encrypting
-  everything; the planned approach is a random data key wrapped by the
-  passphrase key).
 * Files are not padded, so approximate sizes are visible to the host.
 
 ## Releasing
@@ -212,6 +235,7 @@ src/
   git/
     shadowRepo.ts      bare repo via isomorphic-git (objects, trees, push)
     squash.ts          history rewrite with lease check
+    changePassphrase.ts  re-wraps the master key and pushes the new meta.json
     headFix.ts         workaround for remotes whose HEAD branch does not exist
   obsidian/
     http.ts            isomorphic-git HTTP client on requestUrl (no CORS issues)

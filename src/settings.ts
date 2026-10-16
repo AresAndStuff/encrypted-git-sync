@@ -158,6 +158,12 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
             : "You will be asked for it on the next sync.",
       )
       .addButton((b) =>
+        b.setButtonText("Change").onClick(async () => {
+          await this.plugin.changePassphrase();
+          this.display();
+        }),
+      )
+      .addButton((b) =>
         b.setButtonText("Forget on this device").onClick(() => {
           this.plugin.forgetPassphrase();
           new Notice("Passphrase forgotten on this device.");

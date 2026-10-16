@@ -4,15 +4,17 @@ import {
   createRepoMeta,
   decryptBytes,
   DecryptionError,
-  deriveKeys,
   encryptBytes,
   parseRepoMeta,
+  repoIdOf,
+  rewrapRepoMeta,
   sha256Hex,
   unlockRepo,
   WrongPassphraseError,
 } from "../src/core/crypto";
 import { utf8Decode, utf8Encode } from "../src/core/encoding";
 import { decryptManifest, emptyManifest, encryptManifest, pruneTombstones } from "../src/core/manifest";
+import { createFormat1Meta } from "./helpers/legacy";
 
 const ITER = 1_000; // fast for tests; production uses 600k
 
@@ -49,12 +51,14 @@ describe("crypto", () => {
     const parsed = parseRepoMeta(JSON.stringify(meta));
     await expect(unlockRepo(parsed, "wrong")).rejects.toBeInstanceOf(WrongPassphraseError);
     const keys = await unlockRepo(parsed, "right");
-    expect(keys.salt).toBe(meta.kdf.salt);
+    expect(keys.repoId).toBe(meta.repoId);
+    expect(parsed.format).toBe(2);
+    expect(JSON.stringify(meta)).not.toContain("right");
   });
 
   it("derives the same keys on every device", async () => {
     const { meta, keys } = await createRepoMeta("pw", ITER);
-    const other = await deriveKeys("pw", meta.kdf);
+    const other = await unlockRepo(meta, "pw");
     const ct = await encryptBytes(keys, utf8Encode("x"), "aad");
     expect(utf8Decode(await decryptBytes(other, ct, "aad"))).toBe("x");
     expect(await blobPathFor(keys, "Notes/a.md")).toBe(await blobPathFor(other, "Notes/a.md"));
@@ -75,6 +79,63 @@ describe("crypto", () => {
     expect(await sha256Hex(utf8Encode("abc"))).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
+  });
+});
+
+describe("passphrase change", () => {
+  const OLD = "old passphrase 1";
+  const NEW = "new passphrase 22";
+
+  async function roundTripAcross(a: Awaited<ReturnType<typeof unlockRepo>>, b: Awaited<ReturnType<typeof unlockRepo>>) {
+    const ct = await encryptBytes(a, utf8Encode("note"), "blobs/x");
+    expect(utf8Decode(await decryptBytes(b, ct, "blobs/x"))).toBe("note");
+    expect(await blobPathFor(a, "A/b.md")).toBe(await blobPathFor(b, "A/b.md"));
+  }
+
+  it("re-wraps the same master key under a new passphrase", async () => {
+    const { meta, keys } = await createRepoMeta(OLD, ITER);
+    const { meta: next } = await rewrapRepoMeta(meta, OLD, NEW, ITER);
+
+    expect(next.repoId).toBe(meta.repoId);
+    expect(next.kdf.salt).not.toBe(meta.kdf.salt);
+    expect(next.passphraseChangedAt).toBeTruthy();
+    await expect(unlockRepo(next, OLD)).rejects.toBeInstanceOf(WrongPassphraseError);
+    await roundTripAcross(keys, await unlockRepo(next, NEW));
+  });
+
+  it("rejects a wrong current passphrase and a too-short new one", async () => {
+    const { meta } = await createRepoMeta(OLD, ITER);
+    await expect(rewrapRepoMeta(meta, "wrong passphrase", NEW, ITER)).rejects.toBeInstanceOf(WrongPassphraseError);
+    await expect(rewrapRepoMeta(meta, OLD, "short", ITER)).rejects.toThrow(/at least 12/);
+  });
+
+  it("can be changed repeatedly", async () => {
+    const { meta, keys } = await createRepoMeta(OLD, ITER);
+    const second = (await rewrapRepoMeta(meta, OLD, NEW, ITER)).meta;
+    const third = (await rewrapRepoMeta(second, NEW, "third passphrase", ITER)).meta;
+    await expect(unlockRepo(third, NEW)).rejects.toBeInstanceOf(WrongPassphraseError);
+    await roundTripAcross(keys, await unlockRepo(third, "third passphrase"));
+  });
+
+  it("still opens format 1 repositories and upgrades them without re-encryption", async () => {
+    const { meta: v1, keys: v1Keys } = await createFormat1Meta(OLD, ITER);
+    expect(parseRepoMeta(JSON.stringify(v1)).format).toBe(1);
+    const unlocked = await unlockRepo(v1, OLD);
+    expect(unlocked.repoId).toBe(v1.kdf.salt);
+    await expect(unlockRepo(v1, "wrong passphrase")).rejects.toBeInstanceOf(WrongPassphraseError);
+
+    const { meta: v2 } = await rewrapRepoMeta(v1, OLD, NEW, ITER);
+    expect(v2.format).toBe(2);
+    expect(repoIdOf(v2)).toBe(repoIdOf(v1));
+    expect(v2.keyCheck).toBeUndefined();
+    // Blobs written under format 1 decrypt with the upgraded repository.
+    await roundTripAcross(v1Keys, await unlockRepo(v2, NEW));
+  });
+
+  it("binds the wrapped key to the repository id", async () => {
+    const { meta } = await createRepoMeta(OLD, ITER);
+    const tampered = { ...meta, repoId: "0".repeat(32) };
+    await expect(unlockRepo(tampered, OLD)).rejects.toBeInstanceOf(WrongPassphraseError);
   });
 });
 

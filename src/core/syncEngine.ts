@@ -10,6 +10,7 @@ import {
   decryptBytes,
   encryptBytes,
   parseRepoMeta,
+  repoIdOf,
   sha256Hex,
   type RepoMeta,
   type VaultKeys,
@@ -207,9 +208,11 @@ export class SyncEngine {
 
     // Safety: if the remote was wiped or re-created, the old base would make
     // every local file look "deleted remotely". Start from an empty base.
+    // Older state files stored the salt, which equals the id of format 1 repos.
+    const knownRepo = state.repoId ?? state.repoSalt ?? null;
     const remoteReset =
       (remote.isNew && state.lastCommit !== null) ||
-      (state.repoSalt !== null && state.repoSalt !== remote.meta.kdf.salt);
+      (knownRepo !== null && knownRepo !== repoIdOf(remote.meta));
     if (remoteReset) {
       this.progress("Remote repository was re-created; treating this device as new.");
       state.files = {};
@@ -370,7 +373,8 @@ export class SyncEngine {
     }
 
     state.lastCommit = head;
-    state.repoSalt = remote.meta.kdf.salt;
+    state.repoId = repoIdOf(remote.meta);
+    delete state.repoSalt;
     state.lastSyncAt = now;
     await this.stateStore.save(state);
 
