@@ -14,8 +14,17 @@ export function isTextPath(path: string): boolean {
 
 /** Splits into lines while keeping line endings, so join("") is lossless. */
 function splitLines(text: string): string[] {
-  if (text === "") return [];
-  return text.split(/(?<=\n)/);
+  // No regex lookbehind: unsupported on iOS before 16.4.
+  const lines: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      lines.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < text.length) lines.push(text.slice(start));
+  return lines;
 }
 
 export type MergeOutcome = { clean: true; text: string } | { clean: false };

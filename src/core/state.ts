@@ -50,9 +50,9 @@ export interface StateStore {
 export class MemoryStateStore implements StateStore {
   private state: SyncState | null = null;
   async load(): Promise<SyncState | null> {
-    return this.state ? structuredClone(this.state) : null;
+    return this.state ? (JSON.parse(JSON.stringify(this.state)) as SyncState) : null;
   }
   async save(state: SyncState): Promise<void> {
-    this.state = structuredClone(state);
+    this.state = JSON.parse(JSON.stringify(state)) as SyncState;
   }
 }

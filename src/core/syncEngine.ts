@@ -241,7 +241,8 @@ export class SyncEngine {
       }
     }
 
-    const manifest: Manifest = structuredClone(remote.manifest);
+    // JSON copy instead of structuredClone (missing on iOS before 15.4).
+    const manifest = JSON.parse(JSON.stringify(remote.manifest)) as Manifest;
     const tree = new Map(remote.tree);
     const now = this.now();
     let remoteChanged = remote.isNew;
