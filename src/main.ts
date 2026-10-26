@@ -14,12 +14,11 @@
 
 import "./polyfills";
 
-import { Notice, Plugin, type TAbstractFile } from "obsidian";
+import { Notice, Plugin, TFile, type TAbstractFile } from "obsidian";
 import LightningFS from "@isomorphic-git/lightning-fs";
 import type { AuthCallback, PromiseFsClient } from "isomorphic-git";
 
 import { createRepoMeta, repoIdOf, unlockRepo, WrongPassphraseError, type RepoMeta, type VaultKeys } from "./core/crypto";
-import { toHex } from "./core/encoding";
 import { createPathFilter } from "./core/filters";
 import { emptyState } from "./core/state";
 import { SyncAbortedError, SyncEngine, type KeyProvider, type SyncResult } from "./core/syncEngine";
@@ -28,7 +27,18 @@ import { squashHistory } from "./git/squash";
 import { changeRepoPassphrase } from "./git/changePassphrase";
 import { rotateRepoKey, RotationRacedError } from "./git/rotateKey";
 import { obsidianHttp } from "./obsidian/http";
-import { askChangePassphrase, askPassphrase, confirm } from "./obsidian/modals";
+import { askChangePassphrase, askPassphrase, confirm, formatSize, pick, previewVersion } from "./obsidian/modals";
+import {
+  fileHistory,
+  listVersions,
+  planVaultRestore,
+  readFileAt,
+  restoreFile,
+  restoreVault,
+  type VaultVersion,
+} from "./git/history";
+import { isTextPath } from "./core/merge";
+import { toHex, utf8Decode } from "./core/encoding";
 import { Secrets } from "./obsidian/secrets";
 import { PluginFileStateStore } from "./obsidian/stateStore";
 import { ObsidianVault } from "./obsidian/vault";
@@ -59,6 +69,32 @@ export default class EncryptedGitSyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.runSync() });
     this.addCommand({ id: "squash-history", name: "Squash history now", callback: () => void this.runSquash(true) });
+    this.addCommand({
+      id: "file-history",
+      name: "Show version history of current file",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (!checking) void this.showFileHistory(file);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "restore-vault",
+      name: "Restore vault to an earlier version",
+      callback: () => void this.restoreVaultVersion(),
+    });
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof TFile)) return;
+        menu.addItem((item) =>
+          item
+            .setTitle("Version history")
+            .setIcon("history")
+            .onClick(() => void this.showFileHistory(file)),
+        );
+      }),
+    );
     this.addCommand({
       id: "change-passphrase",
       name: "Change encryption passphrase",
@@ -213,14 +249,20 @@ export default class EncryptedGitSyncPlugin extends Plugin {
     }
   }
 
-  private createEngine(repo: ShadowRepo): SyncEngine {
+  /** The vault as the sync sees it: only files that pass the ignore/size/attachment rules. */
+  private createVault(): ObsidianVault {
     const s = this.settings;
     const filter = createPathFilter({
       ignorePatterns: s.ignorePatterns,
       syncAttachments: s.syncAttachments,
       maxFileSizeMB: s.maxFileSizeMB,
     });
-    return new SyncEngine(repo, new ObsidianVault(this.app, filter), this.keyProvider(), this.stateStore, {
+    return new ObsidianVault(this.app, filter);
+  }
+
+  private createEngine(repo: ShadowRepo): SyncEngine {
+    const s = this.settings;
+    return new SyncEngine(repo, this.createVault(), this.keyProvider(), this.stateStore, {
       deviceName: s.deviceName,
       tombstoneMaxAgeDays: s.tombstoneMaxAgeDays,
       onProgress: (msg) => this.setStatus(`Encrypted sync: ${msg}`),
@@ -486,6 +528,142 @@ export default class EncryptedGitSyncPlugin extends Plugin {
     }
   }
 
+  // --- Version history --------------------------------------------------
+
+  /**
+   * Syncs, then returns what a history operation needs. Syncing first makes
+   * the current state a version of its own (so a restore can be undone) and
+   * unlocks the key. Returns null (after a notice) if that is not possible.
+   */
+  private async prepareHistory(): Promise<{ repo: ShadowRepo; keys: VaultKeys; versions: VaultVersion[] } | null> {
+    if (!this.isConfigured() || !this.secrets.get("token")) {
+      new Notice("Encrypted sync: set the repository URL and access token first.");
+      return null;
+    }
+    if (this.busy) {
+      new Notice("Encrypted sync is busy; try again in a moment.");
+      return null;
+    }
+    this.busy = true;
+    try {
+      const repo = this.createRepo();
+      await this.createEngine(repo).sync();
+      this.setStatus("Encrypted sync: reading history…");
+      const versions = await listVersions(repo);
+      if (!this.keys || versions.length === 0) {
+        new Notice("Encrypted sync: there is no history yet.");
+        return null;
+      }
+      return { repo, keys: this.keys, versions };
+    } catch (e) {
+      this.reportError(e, false);
+      return null;
+    } finally {
+      this.busy = false;
+      this.setStatus("Encrypted sync: idle");
+    }
+  }
+
+  async showFileHistory(file: TFile): Promise<void> {
+    const ctx = await this.prepareHistory();
+    if (!ctx) return;
+    const { repo, keys, versions } = ctx;
+    try {
+      const history = await fileHistory(repo, keys, file.path, versions);
+      if (history.length === 0) {
+        new Notice(`Encrypted sync: "${file.name}" has no synced versions.`);
+        return;
+      }
+      const chosen = await pick(
+        this.app,
+        history,
+        (v) => `${formatDate(v.timestamp)} · ${formatSize(v.size)}${v === history[0] ? " · current" : ""}`,
+        `Versions of ${file.name}`,
+      );
+      if (!chosen) return;
+
+      const data = (await readFileAt(repo, keys, chosen.oid, file.path))!;
+      const choice = await previewVersion(
+        this.app,
+        `${file.name} · ${formatDate(chosen.timestamp)}`,
+        isTextPath(file.path) ? utf8Decode(data) : null,
+        chosen.size,
+      );
+      if (!choice) return;
+
+      // busy: an auto-sync between writing and marking the file could treat
+      // a restored, previously deleted file as a stale copy (see history.ts).
+      if (this.busy) {
+        new Notice("Encrypted sync is busy; try again in a moment.");
+        return;
+      }
+      this.busy = true;
+      let written: string;
+      try {
+        written = await restoreFile(repo, keys, this.createVault(), chosen.oid, file.path, {
+          asCopy: choice === "copy",
+          timestamp: chosen.timestamp,
+          stateStore: this.stateStore,
+        });
+      } finally {
+        this.busy = false;
+      }
+      new Notice(`Encrypted sync: restored ${written}.`);
+      void this.runSync({ quiet: true });
+    } catch (e) {
+      this.reportError(e, false);
+    }
+  }
+
+  async restoreVaultVersion(): Promise<void> {
+    const ctx = await this.prepareHistory();
+    if (!ctx) return;
+    const { repo, keys, versions } = ctx;
+    try {
+      const chosen = await pick(
+        this.app,
+        versions.slice(1), // the newest version is the current state
+        (v) => `${formatDate(v.timestamp)}${v.message.startsWith("sync") ? "" : ` · ${v.message}`}`,
+        "Restore the vault to…",
+      );
+      if (!chosen) return;
+
+      const vault = this.createVault();
+      const plan = await planVaultRestore(repo, keys, vault, chosen.oid);
+      if (plan.write.length === 0 && plan.remove.length === 0) {
+        new Notice("Encrypted sync: the vault already matches that version.");
+        return;
+      }
+      const ok = await confirm(
+        this.app,
+        `Restore vault to ${formatDate(chosen.timestamp)}?`,
+        `${plan.write.length} file(s) will be restored or overwritten and ${plan.remove.length} file(s) ` +
+          "moved to the trash. Files excluded from sync are not touched. " +
+          "The current state stays in the history, so you can jump back to it.",
+        "Restore",
+      );
+      if (!ok) return;
+      if (this.busy) {
+        new Notice("Encrypted sync is busy; try again in a moment.");
+        return;
+      }
+
+      this.busy = true;
+      try {
+        await restoreVault(repo, keys, vault, chosen.oid, plan, {
+          stateStore: this.stateStore,
+          onProgress: (msg) => this.setStatus(`Encrypted sync: ${msg}`),
+        });
+      } finally {
+        this.busy = false;
+      }
+      new Notice(`Encrypted sync: vault restored to ${formatDate(chosen.timestamp)}.`);
+      void this.runSync({ quiet: true });
+    } catch (e) {
+      this.reportError(e, false);
+    }
+  }
+
   forgetPassphrase(): void {
     this.keys = null;
     this.secrets.set("passphrase", null);
@@ -518,6 +696,12 @@ export default class EncryptedGitSyncPlugin extends Plugin {
       ? `Connected. Branch "${this.settings.branch}" exists.`
       : `Connected. Branch "${this.settings.branch}" is empty; the first sync will set it up.`;
   }
+}
+
+function formatDate(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function formatTime(d: Date): string {

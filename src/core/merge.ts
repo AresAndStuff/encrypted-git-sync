@@ -51,9 +51,17 @@ export function mergeText(base: string, local: string, remote: string): MergeOut
 
 /**
  * "Notes/Plan.md" -> "Notes/Plan (conflict 2026-10-15 0741 laptop).md"
- * Uses `exists` to avoid overwriting an earlier conflict copy.
+ * With kind "version" (restoring an old version as a copy):
+ * "Notes/Plan.md" -> "Notes/Plan (version 2026-10-15 0741).md"
+ * Uses `exists` to avoid overwriting an earlier copy.
  */
-export function conflictCopyPath(path: string, when: Date, device: string, exists: (p: string) => boolean): string {
+export function conflictCopyPath(
+  path: string,
+  when: Date,
+  device: string,
+  exists: (p: string) => boolean,
+  kind: "conflict" | "version" = "conflict",
+): string {
   const slash = path.lastIndexOf("/");
   const dir = slash >= 0 ? path.slice(0, slash + 1) : "";
   const file = slash >= 0 ? path.slice(slash + 1) : path;
@@ -66,7 +74,7 @@ export function conflictCopyPath(path: string, when: Date, device: string, exist
     when.getMinutes(),
   )}`;
   const safeDevice = device.replace(/[\\/:*?"<>|#^[\]]/g, "").trim();
-  const label = safeDevice ? `conflict ${stamp} ${safeDevice}` : `conflict ${stamp}`;
+  const label = safeDevice ? `${kind} ${stamp} ${safeDevice}` : `${kind} ${stamp}`;
 
   let candidate = `${dir}${stem} (${label})${ext}`;
   for (let i = 2; exists(candidate); i++) candidate = `${dir}${stem} (${label} ${i})${ext}`;

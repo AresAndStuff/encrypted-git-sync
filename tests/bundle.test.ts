@@ -25,7 +25,8 @@ describe("mobile-safe bundle", () => {
   it("loads without Node globals, like on a phone", () => {
     const stubObsidian = new Proxy(
       {},
-      { get: (_t, key) => (key === "Plugin" || key === "Modal" || key === "PluginSettingTab" ? class {} : () => undefined) },
+      // Capitalised exports (Plugin, Modal, FuzzySuggestModal, …) are classes the bundle may extend.
+      { get: (_t, key) => (typeof key === "string" && /^[A-Z]/.test(key) ? class {} : () => undefined) },
     );
     const module = { exports: {} as Record<string, unknown> };
     const sandbox = {

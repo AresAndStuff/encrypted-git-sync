@@ -339,7 +339,20 @@ export async function blobPathFor(keys: VaultKeys, vaultPath: string): Promise<s
 }
 
 export function parseRepoMeta(text: string): RepoMeta {
-  const meta = JSON.parse(text) as RepoMeta;
+  let meta: RepoMeta;
+  try {
+    meta = JSON.parse(text) as RepoMeta;
+  } catch {
+    throw new Error("meta.json is not valid JSON; this does not look like an Encrypted Git Sync repository.");
+  }
+  // Check the version before the fields: a newer format may use fields this
+  // version does not know, and "malformed" would then be a misleading error.
+  if (typeof meta?.format === "number" && meta.format > REPO_FORMAT_VERSION) {
+    throw new Error(
+      `This repository uses format ${meta.format}, but this plugin version only supports up to ` +
+        `format ${REPO_FORMAT_VERSION}. Update Encrypted Git Sync on this device.`,
+    );
+  }
   const keyMaterial = meta?.format >= 2 ? meta.wrappedKey && meta.repoId : meta?.keyCheck;
   if (typeof meta?.format !== "number" || !meta.kdf?.salt || !keyMaterial) {
     throw new Error("meta.json is missing or malformed; this does not look like an Encrypted Git Sync repository.");

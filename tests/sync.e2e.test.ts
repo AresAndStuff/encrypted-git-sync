@@ -20,6 +20,7 @@ import { MemoryVault } from "./helpers/memoryVault";
 import { createFormat1Meta } from "./helpers/legacy";
 import { changeRepoPassphrase } from "../src/git/changePassphrase";
 import { rotateRepoKey, RotationRacedError } from "../src/git/rotateKey";
+import { fileHistory, listVersions, planVaultRestore, readFileAt, restoreFile, restoreVault } from "../src/git/history";
 import { parseRepoMeta } from "../src/core/crypto";
 
 const ITER = 1_000;
@@ -423,6 +424,125 @@ describe("key rotation", () => {
     expect(git(name, "rev-parse", "main~1")).toBe(before);
     await a.sync();
     expect(a.vault.paths()).toEqual(["x.md", "y.md"]);
+  });
+});
+
+describe("version history", () => {
+  const PASS = "history passphrase";
+  const keysOf = async (d: Device) => {
+    const head = (await d.repo.fetch())!;
+    const tree = await d.repo.readTreeMap(head);
+    return unlockRepo(parseRepoMeta(new TextDecoder().decode(await d.repo.readBlob(tree.get("meta.json")!))), PASS);
+  };
+
+  it("lists file versions and restores one, as a new version other devices receive", async () => {
+    const url = server.url(newRemote());
+    const clock = { now: Date.UTC(2026, 9, 20, 9) };
+    const a = new Device(url, "a", PASS, clock);
+    const b = new Device(url, "b", PASS, clock);
+
+    a.vault.set("plan.md", "v1\n");
+    a.vault.set("other.md", "x\n");
+    await a.sync();
+    clock.now += 3_600_000;
+    a.vault.set("other.md", "y\n"); // plan.md unchanged in this version
+    await a.sync();
+    clock.now += 3_600_000;
+    a.vault.set("plan.md", "v2\n");
+    await a.sync();
+    clock.now += 3_600_000;
+    a.vault.set("plan.md", "v3\n");
+    await a.sync();
+    await b.sync();
+
+    const keys = await keysOf(a);
+    const versions = await listVersions(a.repo);
+    expect(versions).toHaveLength(4);
+    expect(versions[0].timestamp).toBeGreaterThan(versions[3].timestamp);
+
+    const history = await fileHistory(a.repo, keys, "plan.md", versions);
+    const contents = await Promise.all(
+      history.map(async (v) => new TextDecoder().decode((await readFileAt(a.repo, keys, v.oid, "plan.md"))!)),
+    );
+    expect(contents).toEqual(["v3\n", "v2\n", "v1\n"]); // v1 appears once despite two commits
+
+    // Restore v1 as a copy, then over the file.
+    const copy = await restoreFile(a.repo, keys, a.vault, history[2].oid, "plan.md", {
+      asCopy: true,
+      timestamp: history[2].timestamp,
+      stateStore: a.state,
+    });
+    expect(copy).toMatch(/^plan \(version \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
+    expect(a.vault.get(copy)).toBe("v1\n");
+    await restoreFile(a.repo, keys, a.vault, history[2].oid, "plan.md", { stateStore: a.state });
+    expect(a.vault.get("plan.md")).toBe("v1\n");
+
+    // The restore syncs like any edit; history grows, nothing is rewritten.
+    clock.now += 60_000;
+    await a.sync();
+    expect(await listVersions(a.repo)).toHaveLength(5);
+    await b.sync();
+    expect(b.vault.get("plan.md")).toBe("v1\n");
+    expect(b.vault.get(copy)).toBe("v1\n");
+  });
+
+  it("restores the whole vault, including deleted and later-added files, and can jump back", async () => {
+    const url = server.url(newRemote());
+    const clock = { now: Date.UTC(2026, 9, 20, 9) };
+    const a = new Device(url, "a", PASS, clock);
+    const b = new Device(url, "b", PASS, clock);
+
+    a.vault.set("keep.md", "old\n");
+    a.vault.set("Folder/deleted-later.md", "bring me back\n");
+    await a.sync();
+    clock.now += 86_400_000;
+    a.vault.set("keep.md", "new\n");
+    a.vault.remove("Folder/deleted-later.md");
+    a.vault.set("added-later.md", "added\n");
+    await a.sync();
+    await b.sync();
+
+    const keys = await keysOf(a);
+    const [latest, old] = await listVersions(a.repo);
+
+    const plan = await planVaultRestore(a.repo, keys, a.vault, old.oid);
+    expect(plan.write).toEqual(["Folder/deleted-later.md", "keep.md"]);
+    expect(plan.remove).toEqual(["added-later.md"]);
+
+    await restoreVault(a.repo, keys, a.vault, old.oid, plan, { stateStore: a.state });
+    expect(a.vault.paths()).toEqual(["Folder/deleted-later.md", "keep.md"]);
+    expect(a.vault.get("keep.md")).toBe("old\n");
+
+    clock.now += 60_000;
+    await a.sync();
+    await b.sync();
+    expect(b.vault.paths()).toEqual(["Folder/deleted-later.md", "keep.md"]);
+
+    // Jump back to the state before the restore.
+    await restoreVault(a.repo, keys, a.vault, latest.oid, undefined, { stateStore: a.state });
+    clock.now += 60_000;
+    await a.sync();
+    await b.sync();
+    expect(b.vault.paths()).toEqual(["added-later.md", "keep.md"]);
+    expect(b.vault.get("keep.md")).toBe("new\n");
+  });
+
+  it("still reads versions from before a passphrase change", async () => {
+    const url = server.url(newRemote());
+    const a = new Device(url, "a", PASS);
+    a.vault.set("n.md", "before\n");
+    await a.sync();
+    await changeRepoPassphrase(a.repo, PASS, "another passphrase", { iterations: ITER });
+    a.passphrase = "another passphrase";
+    const head = (await a.repo.fetch())!;
+    const tree = await a.repo.readTreeMap(head);
+    const keys = await unlockRepo(
+      parseRepoMeta(new TextDecoder().decode(await a.repo.readBlob(tree.get("meta.json")!))),
+      "another passphrase",
+    );
+    const versions = await listVersions(a.repo);
+    expect(versions[0].message).toBe("change passphrase");
+    expect(new TextDecoder().decode((await readFileAt(a.repo, keys, versions[1].oid, "n.md"))!)).toBe("before\n");
   });
 });
 

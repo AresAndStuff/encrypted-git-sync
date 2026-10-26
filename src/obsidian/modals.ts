@@ -4,7 +4,7 @@
  * (or false) when the user closes it without confirming.
  */
 
-import { Modal, Setting, type App } from "obsidian";
+import { FuzzySuggestModal, Modal, Setting, type App } from "obsidian";
 import { MIN_PASSPHRASE_LENGTH } from "../core/crypto";
 
 export interface PassphraseResult {
@@ -264,4 +264,104 @@ export class ConfirmModal extends Modal {
 
 export function confirm(app: App, title: string, message: string, confirmText: string): Promise<boolean> {
   return new Promise((resolve) => new ConfirmModal(app, title, message, confirmText, resolve).open());
+}
+
+/** A searchable list of choices; resolves with the chosen item or null. */
+export class PickerModal<T> extends FuzzySuggestModal<T> {
+  private chosen = false;
+
+  constructor(
+    app: App,
+    private readonly items: T[],
+    private readonly label: (item: T) => string,
+    placeholder: string,
+    private readonly resolve: (item: T | null) => void,
+  ) {
+    super(app);
+    this.setPlaceholder(placeholder);
+  }
+
+  getItems(): T[] {
+    return this.items;
+  }
+
+  getItemText(item: T): string {
+    return this.label(item);
+  }
+
+  onChooseItem(item: T): void {
+    this.chosen = true;
+    this.resolve(item);
+  }
+
+  onClose(): void {
+    super.onClose();
+    // onChooseItem runs after onClose in some Obsidian versions; wait a tick.
+    window.setTimeout(() => {
+      if (!this.chosen) this.resolve(null);
+    }, 0);
+  }
+}
+
+export function pick<T>(app: App, items: T[], label: (item: T) => string, placeholder: string): Promise<T | null> {
+  return new Promise((resolve) => new PickerModal(app, items, label, placeholder, resolve).open());
+}
+
+export type PreviewChoice = "restore" | "copy" | null;
+
+/** Shows an old version of a file and asks whether to restore it. */
+export class VersionPreviewModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private readonly title: string,
+    private readonly text: string | null,
+    private readonly size: number,
+    private readonly resolve: (choice: PreviewChoice) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.setTitle(this.title);
+    if (this.text === null) {
+      this.contentEl.createEl("p", { text: `Binary file, ${formatSize(this.size)}. No preview available.` });
+    } else {
+      this.contentEl.createEl("pre", { text: this.text, cls: "egs-preview" });
+    }
+    this.contentEl.createEl("p", {
+      text: "Restoring creates a new version; the current one stays in the history, so you can jump back.",
+      cls: "setting-item-description",
+    });
+    const choose = (choice: PreviewChoice) => {
+      this.settled = true;
+      this.resolve(choice);
+      this.close();
+    };
+    new Setting(this.contentEl)
+      .addButton((b) => b.setButtonText("Cancel").onClick(() => this.close()))
+      .addButton((b) => b.setButtonText("Restore as copy").onClick(() => choose("copy")))
+      .addButton((b) =>
+        b
+          .setButtonText("Restore this version")
+          .setCta()
+          .onClick(() => choose("restore")),
+      );
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.settled) this.resolve(null);
+  }
+}
+
+export function previewVersion(app: App, title: string, text: string | null, size: number): Promise<PreviewChoice> {
+  return new Promise((resolve) => new VersionPreviewModal(app, title, text, size, resolve).open());
+}
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }

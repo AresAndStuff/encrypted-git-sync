@@ -41,6 +41,12 @@ or `src/git`. `main.ts` should only orchestrate.
 8. **Mobile:** `main.js` may only `require("obsidian")`. No Node built-ins, no
    regex lookbehind, no `structuredClone`. `tests/bundle.test.ts` checks this.
 
+9. **Restores never rewrite history.** `git/history.ts` writes old content into
+   the vault and lets the next sync upload it. Restored files without a base
+   get the base hash `"restored"` so the planner uploads them instead of
+   treating them as stale copies of a deleted file. Hold `busy` while
+   restoring, so no sync runs between writing and marking.
+
 ## Changing the repository format
 
 1. Bump `REPO_FORMAT_VERSION` in `crypto.ts`.
@@ -59,6 +65,7 @@ or `src/git`. `main.ts` should only orchestrate.
 | Squash             | `git/squash.ts`           | rewritten      | force + lease  |
 | Change passphrase  | `git/changePassphrase.ts` | appends        | normal, retried |
 | Rotate key         | `git/rotateKey.ts`        | replaced (1 commit) | force + lease |
+| Restore version    | `git/history.ts`          | appends (via sync) | normal, retried |
 
 "Lease" means: compare the remote head right before the force-push with the
 head the operation started from, and abort if it moved. isomorphic-git has no

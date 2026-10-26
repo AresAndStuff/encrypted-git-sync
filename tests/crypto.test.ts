@@ -59,6 +59,11 @@ describe("crypto", () => {
     expect(JSON.stringify(meta)).not.toContain("right");
   });
 
+  it("tells the user to update when meta.json is from a newer format", () => {
+    expect(() => parseRepoMeta(JSON.stringify({ format: 99, kdf: { salt: "x" } }))).toThrow(/Update Encrypted Git Sync/);
+    expect(() => parseRepoMeta("not json")).toThrow(/not valid JSON/);
+  });
+
   it("derives the same keys on every device", async () => {
     const { meta, keys } = await createRepoMeta("pw", ITER);
     const other = await unlockRepo(meta, "pw");

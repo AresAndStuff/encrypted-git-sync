@@ -147,6 +147,28 @@ plugin works alongside this plugin.
   The passphrase is read from `EGS_PASSPHRASE` or asked for. Keep a copy of
   `dist/recover.mjs` somewhere safe.
 
+## Going back to earlier versions
+
+Every sync stores a full snapshot of the vault, so you can jump back:
+
+* **One note:** right-click a file and choose **Version history**, or run
+  **Show version history of current file**. Pick a version, look at the
+  preview, then **Restore this version** or **Restore as copy**
+  (creates `Note (version 2026-10-20 1403).md` next to it).
+* **The whole vault:** run **Restore vault to an earlier version** and pick a
+  point in time. You see how many files will be restored and how many moved to
+  the trash before anything happens. Files excluded from sync are not touched.
+
+A restore is an ordinary change: it is synced as a new version and reaches your
+other devices. Nothing in the history is rewritten, so you can always jump back
+to the state from before the restore. The plugin syncs before showing the
+history, so your current state is always one of the versions.
+
+Which versions exist depends on history squashing (default: 5 from today, one
+per day for 7 days, one per week for 4 weeks, one per month for 12 months).
+For finer-grained undo of a single note, Obsidian's core File Recovery plugin
+works alongside this.
+
 ## Changing the passphrase
 
 Run **Change encryption passphrase** (command palette, or the *Change* button in
@@ -192,6 +214,8 @@ passphrase), then sync the others, and delete the old repository. Do not
 
 * **Sync now**
 * **Squash history now**
+* **Show version history of current file** (also *Version history* in the file menu)
+* **Restore vault to an earlier version**
 * **Change encryption passphrase**
 * **Rotate encryption key (re-encrypt everything)**
 * **Forget passphrase on this device**
@@ -258,6 +282,7 @@ src/
     squash.ts          history rewrite with lease check
     changePassphrase.ts  re-wraps the master key and pushes the new meta.json
     rotateKey.ts       new master key, re-encrypt everything, single-commit history
+    history.ts         list versions, file history, restore a file or the whole vault
     headFix.ts         workaround for remotes whose HEAD branch does not exist
   obsidian/
     http.ts            isomorphic-git HTTP client on requestUrl (no CORS issues)
