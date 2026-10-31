@@ -8,6 +8,12 @@
  *
  * Git is used purely as transport and history. Merging happens in plaintext,
  * in the sync engine.
+ *
+ * Memory: isomorphic-git loads a whole pack file into memory to read one
+ * object from it, and downloads arrive as one buffer. So syncs fetch
+ * shallowly (depth 1: only the current snapshot), and only operations that
+ * need the history (squash, version history) call deepen(). Phones also
+ * compact the local store when it grows (compactIfNeeded). See MAINTAINING.md.
  */
 
 import git, { type AuthCallback, type HttpClient, type PromiseFsClient } from "isomorphic-git";
@@ -36,11 +42,18 @@ export class PushRejectedError extends Error {
   }
 }
 
-/** The two fs calls used directly; isomorphic-git types them loosely. */
+/** The fs calls used directly; isomorphic-git types them loosely. */
 interface DirFs {
-  stat(path: string): Promise<unknown>;
+  stat(path: string): Promise<{ size: number; isDirectory(): boolean }>;
   mkdir(path: string): Promise<void>;
+  readdir(path: string): Promise<string[]>;
+  readFile(path: string, options: { encoding: "utf8" }): Promise<string>;
+  unlink(path: string): Promise<void>;
+  rmdir(path: string): Promise<void>;
 }
+
+/** Git's "infinite" depth: asks the server to remove the shallow boundary. */
+const UNSHALLOW_DEPTH = 0x7fffffff;
 function dirFs(fs: PromiseFsClient): DirFs {
   return fs.promises as unknown as DirFs;
 }
@@ -99,18 +112,7 @@ export class ShadowRepo {
     } catch {
       haveIt = false;
     }
-    if (!haveIt) {
-      await git.fetch({
-        ...this.base,
-        http: withHeadFallback(this.remote.http, this.remote.branch),
-        onAuth: this.remote.onAuth,
-        remote: REMOTE,
-        ref: this.remote.branch,
-        remoteRef: this.remote.branch,
-        singleBranch: true,
-        tags: false,
-      });
-    }
+    if (!haveIt) await this.fetchBranch(1);
     // Record the remote head explicitly. This also covers history rewritten
     // by squashing on another device, which is not a fast-forward.
     await git.writeRef({ ...this.base, ref: this.remoteRef, value: head.oid, force: true });
@@ -124,6 +126,86 @@ export class ShadowRepo {
       force: true,
     });
     return head.oid;
+  }
+
+  /**
+   * Downloads the sync branch. depth 1 = only the newest snapshot (plus
+   * nothing we already have); UNSHALLOW_DEPTH = the full history. Servers
+   * without shallow support get a normal, full fetch.
+   */
+  private async fetchBranch(depth: number): Promise<void> {
+    const args = {
+      ...this.base,
+      http: withHeadFallback(this.remote.http, this.remote.branch),
+      onAuth: this.remote.onAuth,
+      remote: REMOTE,
+      ref: this.remote.branch,
+      remoteRef: this.remote.branch,
+      singleBranch: true,
+      tags: false,
+    };
+    try {
+      await git.fetch({ ...args, depth });
+    } catch (e) {
+      if ((e as { code?: string }).code !== "RemoteCapabilityError") throw e;
+      await git.fetch(args);
+    }
+  }
+
+  /** Commits whose parents are not stored locally (Git's "shallow" file). */
+  async shallowCommits(): Promise<Set<string>> {
+    try {
+      const text = await dirFs(this.fs).readFile(`${this.gitdir}/shallow`, { encoding: "utf8" });
+      return new Set(text.split("\n").map((l) => l.trim()).filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  }
+
+  /**
+   * Downloads the full history of the sync branch, if it is not local yet.
+   * Needed before reading old versions or rewriting history (squash).
+   * Costs memory proportional to the history size, so it only runs on demand.
+   */
+  async deepen(): Promise<void> {
+    if ((await this.shallowCommits()).size === 0) return;
+    await this.fetchBranch(UNSHALLOW_DEPTH);
+  }
+
+  /** Number and total size of local pack files. */
+  async packStats(): Promise<{ count: number; bytes: number }> {
+    const dir = `${this.gitdir}/objects/pack`;
+    let names: string[] = [];
+    try {
+      names = await dirFs(this.fs).readdir(dir);
+    } catch {
+      return { count: 0, bytes: 0 };
+    }
+    let count = 0;
+    let bytes = 0;
+    for (const name of names) {
+      if (!name.endsWith(".pack")) continue;
+      count++;
+      bytes += (await dirFs(this.fs).stat(`${dir}/${name}`)).size;
+    }
+    return { count, bytes };
+  }
+
+  /**
+   * Deletes the local store when it has grown well beyond the current
+   * snapshot (many small packs, or old history). The next sync re-downloads
+   * just the current snapshot. Only safe between syncs: everything local is
+   * either pushed or a leftover of a failed attempt.
+   * Returns true if the store was deleted.
+   */
+  async compactIfNeeded(snapshotBytes: number, maxPacks = 20): Promise<boolean> {
+    const { count, bytes } = await this.packStats();
+    const tooBig = bytes > 2 * snapshotBytes + 16 * 1024 * 1024;
+    if (count <= maxPacks && !tooBig) return false;
+    await removeRecursive(this.fs, this.gitdir);
+    for (const key of Object.keys(this.cache)) delete this.cache[key];
+    await this.ensureInitialized();
+    return true;
   }
 
   /** Current remote head as advertised by the server, without downloading objects. */
@@ -225,14 +307,19 @@ export class ShadowRepo {
     };
   }
 
-  /** First-parent history, newest first. */
+  /**
+   * First-parent history, newest first. Stops at the shallow boundary, so on a
+   * shallow store it returns only what is local; call deepen() first when the
+   * whole history matters.
+   */
   async log(head: string): Promise<CommitRecord[]> {
+    const shallow = await this.shallowCommits();
     const out: CommitRecord[] = [];
     let oid: string | null = head;
     while (oid) {
       const c: CommitRecord = await this.readCommit(oid);
       out.push(c);
-      oid = c.parent;
+      oid = shallow.has(c.oid) ? null : c.parent;
     }
     return out;
   }
@@ -270,6 +357,21 @@ export class ShadowRepo {
       throw new PushRejectedError(detail || result.error || "Push rejected by the server");
     }
     await git.writeRef({ ...this.base, ref: this.remoteRef, value: oid, force: true });
+  }
+}
+
+async function removeRecursive(fs: PromiseFsClient, path: string): Promise<void> {
+  let stat;
+  try {
+    stat = await dirFs(fs).stat(path);
+  } catch {
+    return;
+  }
+  if (stat.isDirectory()) {
+    for (const name of await dirFs(fs).readdir(path)) await removeRecursive(fs, `${path}/${name}`);
+    await dirFs(fs).rmdir(path);
+  } else {
+    await dirFs(fs).unlink(path);
   }
 }
 

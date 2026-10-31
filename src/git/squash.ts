@@ -5,6 +5,9 @@
  * commits that are kept. The kept commits are re-chained (same trees, same
  * timestamps, new parents) and force-pushed, after checking that nobody
  * pushed in the meantime (a hand-rolled "force-with-lease").
+ *
+ * Needs the full history, so it deepens the local store first. That costs
+ * memory, which is why phones do not squash automatically (see main.ts).
  */
 
 import { selectCommitsToKeep, type CalendarZone, type RetentionPolicy } from "../core/retention";
@@ -27,6 +30,12 @@ export type SquashResult =
 export async function squashHistory(repo: ShadowRepo, options: SquashOptions): Promise<SquashResult> {
   const head = await repo.fetch();
   if (!head) return { status: "empty" };
+  // Syncs fetch shallowly; rewriting needs every commit, or older ones would be lost.
+  await repo.deepen();
+  if ((await repo.shallowCommits()).size > 0) {
+    // Never rewrite a partial history: the missing older commits would be dropped.
+    throw new Error("Could not download the full history; squash skipped, nothing was changed.");
+  }
 
   const commits = await repo.log(head);
   if (commits.length < options.minCommits) return { status: "skipped", commits: commits.length };

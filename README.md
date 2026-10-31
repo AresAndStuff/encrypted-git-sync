@@ -222,6 +222,15 @@ passphrase), then sync the others, and delete the old repository. Do not
 * **Reset this device's sync state**: forgets the local sync history and repository
   cache. Notes are not touched; the next sync compares everything afresh.
 
+## Phones and memory
+
+Syncs download only the current state of the vault, not the history, because
+Obsidian on phones has little memory. The history is downloaded only when it is
+needed: when you open version history, or when history is squashed. For that
+reason phones do not squash automatically; a desktop device does it. On phones
+the plugin also clears its local Git cache when it grows well beyond the size
+of the vault; the next sync then re-downloads just the current state.
+
 ## Limitations
 
 * HTTPS with a token only. `isomorphic-git` does not support SSH.

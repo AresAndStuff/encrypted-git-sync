@@ -270,7 +270,8 @@ export class EncryptedGitSyncSettingTab extends PluginSettingTab {
       .setName("Squash history automatically")
       .setDesc(
         "Keeps the repository small by thinning out old versions: several versions of today, " +
-          "one per day, per week and per month. Older versions are removed for good.",
+          "one per day, per week and per month. Older versions are removed for good. " +
+          "Runs on desktop devices only, because it downloads the full history.",
       )
       .addToggle((t) =>
         t.setValue(s.squashEnabled).onChange(async (v) => {

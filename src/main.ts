@@ -14,7 +14,7 @@
 
 import "./polyfills";
 
-import { Notice, Plugin, TFile, type TAbstractFile } from "obsidian";
+import { Notice, Platform, Plugin, TFile, type TAbstractFile } from "obsidian";
 import LightningFS from "@isomorphic-git/lightning-fs";
 import type { AuthCallback, PromiseFsClient } from "isomorphic-git";
 
@@ -265,6 +265,8 @@ export default class EncryptedGitSyncPlugin extends Plugin {
     return new SyncEngine(repo, this.createVault(), this.keyProvider(), this.stateStore, {
       deviceName: s.deviceName,
       tombstoneMaxAgeDays: s.tombstoneMaxAgeDays,
+      // Phones have little memory; keep the local Git store close to the vault size.
+      compactLocalRepo: Platform.isMobile,
       onProgress: (msg) => this.setStatus(`Encrypted sync: ${msg}`),
       confirmMassDeletion: ({ local, remote, total }) =>
         confirm(
@@ -369,7 +371,9 @@ export default class EncryptedGitSyncPlugin extends Plugin {
   // --- History squashing ------------------------------------------------
 
   private async maybeSquash(repo: ShadowRepo): Promise<void> {
-    if (!this.settings.squashEnabled) return;
+    // Squashing downloads the full history; on phones that can exhaust memory.
+    // Desktop devices do this housekeeping. Manual squash still works on phones.
+    if (!this.settings.squashEnabled || Platform.isMobile) return;
     const state = (await this.stateStore.load()) ?? emptyState();
     if (Date.now() - state.lastSquashAt < this.settings.squashIntervalHours * 3_600_000) return;
     try {

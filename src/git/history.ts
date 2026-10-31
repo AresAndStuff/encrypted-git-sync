@@ -71,6 +71,7 @@ export async function listVersions(repo: ShadowRepo): Promise<VaultVersion[]> {
   await repo.ensureInitialized();
   const head = await repo.fetch();
   if (!head) return [];
+  await repo.deepen(); // syncs fetch only the newest snapshot
   const commits = await repo.log(head);
   return commits.map((c) => ({ oid: c.oid, timestamp: c.timestamp, message: c.message.trim() }));
 }

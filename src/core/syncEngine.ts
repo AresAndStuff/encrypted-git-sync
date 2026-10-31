@@ -78,6 +78,12 @@ export interface SyncOptions {
   /** Fraction of tracked files above which confirmMassDeletion is asked. */
   massDeletionThreshold: number;
   maxAttempts: number;
+  /**
+   * Delete the local Git store after a sync when it has grown well beyond the
+   * current snapshot (see ShadowRepo.compactIfNeeded). Meant for phones, where
+   * memory is tight; the next sync re-downloads only the current snapshot.
+   */
+  compactLocalRepo?: boolean;
   now?: () => number;
   onProgress?: (message: string) => void;
 }
@@ -396,6 +402,12 @@ export class SyncEngine {
     delete state.repoSalt;
     state.lastSyncAt = now;
     await this.stateStore.save(state);
+
+    if (this.options.compactLocalRepo) {
+      let snapshotBytes = 0;
+      for (const entry of Object.values(manifest.files)) if (!entry.deleted) snapshotBytes += entry.size;
+      if (await this.repo.compactIfNeeded(snapshotBytes)) this.progress("Cleaned up local cache.");
+    }
 
     return { summary: summarizePlan(actions), conflicts, merged, pushed, head };
   }

@@ -47,6 +47,15 @@ or `src/git`. `main.ts` should only orchestrate.
    treating them as stale copies of a deleted file. Hold `busy` while
    restoring, so no sync runs between writing and marking.
 
+10. **Keep phone memory bounded by the vault, not the history.**
+    isomorphic-git loads a whole pack into memory to read one object, and
+    downloads arrive as one buffer. Syncs therefore fetch with depth 1;
+    anything that needs old commits calls `ShadowRepo.deepen()` first
+    (squash, version history), and squash refuses to run on a still-shallow
+    store. Phones compact their store (`compactLocalRepo`). Any new code that
+    walks history must call `deepen()` or accept that `log()` stops at the
+    shallow boundary. `tests/memory.e2e.test.ts` guards this.
+
 ## Changing the repository format
 
 1. Bump `REPO_FORMAT_VERSION` in `crypto.ts`.
